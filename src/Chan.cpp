@@ -46,7 +46,7 @@ CChan::CChan(const CString& sName, CIRCNetwork* pNetwork, bool bInConfig,
       m_uJoinTries(0),
       m_sDefaultModes(""),
       m_msNicks(),
-      m_uSortOrder(1),
+      m_uSortOrder(100),
       m_Buffer(),
       m_bModeKnown(false),
       m_mcsModes() {

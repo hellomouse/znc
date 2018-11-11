@@ -57,7 +57,7 @@ class CChan : private CCoreTranslationMixin {
         M_Except = 'e'
     } EModes;
 
-    static const unsigned int    m_uDefaultSortOrder = 1;
+    static const unsigned int    m_uDefaultSortOrder = 100;
 
     CChan(const CString& sName, CIRCNetwork* pNetwork, bool bInConfig,
           CConfig* pConfig = nullptr);

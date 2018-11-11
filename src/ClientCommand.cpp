@@ -1782,7 +1782,7 @@ void CClient::HelpUser(const CString& sFilter) {
                    t_s("Enable channels", "helpcmd|EnableChan|desc"));
     AddCommandHelp("DisableChan", t_s("<#chans>", "helpcmd|DisableChan|args"),
                    t_s("Disable channels", "helpcmd|DisableChan|desc"));
-    AddCommandHelp(Table, "SetSortOrder", "<#chan> [number]", "Set the channel's sort order number", sFilter);
+    AddCommandHelp("SetSortOrder", "<#chan> [number]", "Set the channel's sort order number");
     AddCommandHelp("Attach", t_s("<#chans>", "helpcmd|Attach|args"),
                    t_s("Attach to channels", "helpcmd|Attach|desc"));
     AddCommandHelp("Detach", t_s("<#chans>", "helpcmd|Detach|args"),

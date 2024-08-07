@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2016 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,6 +40,8 @@ class IO {
      * Have to use second param as the ASSERT_*'s return a non-QByteArray.
      */
     void ReadUntilAndGet(QByteArray pattern, QByteArray& match);
+    // Can be used to check that something was not sent. Slow.
+    QByteArray ReadRemainder();
     void Write(QByteArray s = "", bool new_line = true);
     void Close();
 
@@ -70,6 +72,7 @@ class Process : public IO<QProcess> {
         m_exit = code;
     }
     void CanDie() { m_allowDie = true; }
+    void ShouldFinishInSec(int sec) { m_finishTimeoutSec = sec; }
 
     // I can't do much about SWIG...
     void CanLeak() { m_allowLeak = true; }
@@ -80,6 +83,7 @@ class Process : public IO<QProcess> {
     bool m_allowDie = false;
     bool m_allowLeak = false;
     QProcess m_proc;
+    int m_finishTimeoutSec = 30;
 };
 
 // Can't use QEventLoop without existing QCoreApplication
@@ -138,6 +142,9 @@ void IO<Device>::ReadUntilAndGet(QByteArray pattern, QByteArray& match) {
             if (search != -1) {
               match += m_readed.mid(start, search - start);
               m_readed.remove(0, search + 1);
+              if (match.endsWith('\r')) {
+                  match.chop(1);
+              }
               return;
             }
             /* No newline yet, add to retvalue and trunc output */
@@ -158,6 +165,23 @@ void IO<Device>::ReadUntilAndGet(QByteArray pattern, QByteArray& match) {
         }
         m_readed += chunk;
     }
+}
+
+template <typename Device>
+QByteArray IO<Device>::ReadRemainder() {
+    auto deadline = QDateTime::currentDateTime().addSecs(2);
+    while (QDateTime::currentDateTime() < deadline) {
+        const int timeout_ms =QDateTime::currentDateTime().msecsTo(deadline);
+        m_device->waitForReadyRead(std::max(1, timeout_ms));
+        QByteArray chunk = m_device->readAll();
+        if (m_verbose) {
+            std::cout << chunk.toStdString() << std::flush;
+        }
+        m_readed += chunk;
+    }
+    QByteArray result = std::move(m_readed);
+    m_readed.clear();
+    return result;
 }
 
 template <typename Device>

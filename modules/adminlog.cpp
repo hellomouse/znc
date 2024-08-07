@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -58,13 +58,13 @@ class CAdminLogMod : public CModule {
     }
 
     void OnIRCConnected() override {
-        Log("[" + GetUser()->GetUserName() + "/" + GetNetwork()->GetName() +
+        Log("[" + GetUser()->GetUsername() + "/" + GetNetwork()->GetName() +
             "] connected to IRC: " +
             GetNetwork()->GetCurrentServer()->GetName());
     }
 
     void OnIRCDisconnected() override {
-        Log("[" + GetUser()->GetUserName() + "/" + GetNetwork()->GetName() +
+        Log("[" + GetUser()->GetUsername() + "/" + GetNetwork()->GetName() +
             "] disconnected from IRC");
     }
 
@@ -73,7 +73,7 @@ class CAdminLogMod : public CModule {
             // ERROR :Closing Link: nick[24.24.24.24] (Excess Flood)
             // ERROR :Closing Link: nick[24.24.24.24] Killer (Local kill by
             // Killer (reason))
-            Log("[" + GetUser()->GetUserName() + "/" + GetNetwork()->GetName() +
+            Log("[" + GetUser()->GetUsername() + "/" + GetNetwork()->GetName() +
                     "] disconnected from IRC: " +
                     GetNetwork()->GetCurrentServer()->GetName() + " [" +
                     Message.GetParamsColon(0) + "]",
@@ -83,12 +83,12 @@ class CAdminLogMod : public CModule {
     }
 
     void OnClientLogin() override {
-        Log("[" + GetUser()->GetUserName() + "] connected to ZNC from " +
+        Log("[" + GetUser()->GetUsername() + "] connected to ZNC from " +
             GetClient()->GetRemoteIP());
     }
 
     void OnClientDisconnect() override {
-        Log("[" + GetUser()->GetUserName() + "] disconnected from ZNC from " +
+        Log("[" + GetUser()->GetUsername() + "] disconnected from ZNC from " +
             GetClient()->GetRemoteIP());
     }
 

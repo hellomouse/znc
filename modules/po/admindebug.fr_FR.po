@@ -3,22 +3,22 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n > 1);\n"
-"X-Generator: crowdin.com\n"
 "X-Crowdin-Project: znc-bouncer\n"
+"X-Crowdin-Project-ID: 289533\n"
 "X-Crowdin-Language: fr\n"
 "X-Crowdin-File: /master/modules/po/admindebug.pot\n"
+"X-Crowdin-File-ID: 273\n"
 "Project-Id-Version: znc-bouncer\n"
-"Last-Translator: DarthGandalf <alexey+crowdin@asokolov.org>\n"
 "Language-Team: French\n"
 "Language: fr_FR\n"
 
 #: admindebug.cpp:30
 msgid "Enable Debug Mode"
-msgstr ""
+msgstr "Activer le débogage"
 
 #: admindebug.cpp:32
 msgid "Disable Debug Mode"
-msgstr ""
+msgstr "Désactiver le débogage"
 
 #: admindebug.cpp:34
 msgid "Show the Debug Mode status"

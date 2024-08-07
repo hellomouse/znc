@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2016 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ Process::Process(QString cmd, QStringList args,
 
 Process::~Process() {
     if (m_kill) m_proc.terminate();
-    bool bFinished = m_proc.waitForFinished();
+    bool bFinished = m_proc.waitForFinished(1000 * m_finishTimeoutSec);
     EXPECT_TRUE(bFinished);
     if (!bFinished) return;
     if (!m_allowDie) {

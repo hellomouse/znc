@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,8 @@ TEST_F(EscapeTest, Test) {
     testString("&<>",    "%26%3C%3E", "&amp;&lt;&gt;", "&<>",       "&<>");
     testString(" ;",     "+%3B",      " ;",            " ;",        "\\s\\:");
     // clang-format on
+    EXPECT_EQ(CString("a&lt.b&gt;c").Escape_n(CString::EHTML, CString::EASCII),
+              "a&lt.b>c");
 }
 
 TEST(StringTest, Bool) {
@@ -199,8 +201,8 @@ TEST(StringTest, Equals) {
 
 TEST(StringTest, Find) {
     EXPECT_EQ(CString("Hello, I'm Bob").Find("Hello"), 0u);
-    EXPECT_EQ(
-        CString("Hello, I'm Bob").Find("Hello", CString::CaseInsensitive), 0u);
+    EXPECT_EQ(CString("Hello, I'm Bob").Find("Hello", CString::CaseInsensitive),
+              0u);
     EXPECT_EQ(CString("Hello, I'm Bob").Find("Hello", CString::CaseSensitive),
               0u);
 

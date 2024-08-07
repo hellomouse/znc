@@ -2,7 +2,9 @@
 
 timestamps {
   node('freebsd') {
-    // freebsd 10.3 + pkg install git openjdk cmake icu pkgconf swig30 python3 boost-libs gettext-tools qt5-buildtools qt5-network qt5-qmake
+    // freebsd 13.1 + pkg install git openjdk17 cmake icu pkgconf swig python3 boost-libs gettext-tools qt5-buildtools qt5-network qt5-qmake
+    // Then fill known_hosts with https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
+    // (needed for crowdin cron job in jenkins)
     timeout(time: 30, unit: 'MINUTES') {
       def wsdir = pwd()
       stage('Checkout') {

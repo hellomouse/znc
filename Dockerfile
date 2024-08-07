@@ -1,19 +1,12 @@
-FROM alpine:3.7
+FROM alpine:3.19
 
 ARG VERSION_EXTRA=""
 
-# musl silently doesn't support AI_ADDRCONFIG yet, and ZNC doesn't support Happy Eyeballs yet.
-# Together they cause very slow connection. So for now IPv6 is disabled here.
-ARG CMAKEFLAGS="-DVERSION_EXTRA=${VERSION_EXTRA} -DCMAKE_INSTALL_PREFIX=/opt/znc -DWANT_CYRUS=YES -DWANT_PERL=YES -DWANT_PYTHON=YES -DWANT_IPV6=NO"
+ARG CMAKEFLAGS="-DVERSION_EXTRA=${VERSION_EXTRA} -DCMAKE_INSTALL_PREFIX=/opt/znc -DWANT_CYRUS=YES -DWANT_PERL=YES -DWANT_PYTHON=YES -DWANT_ARGON=YES"
 ARG MAKEFLAGS=""
 
-ARG BUILD_DATE
-ARG VCS_REF
-
 LABEL org.label-schema.schema-version="1.0"
-LABEL org.label-schema.vcs-ref=$VCS_REF
 LABEL org.label-schema.vcs-url="https://github.com/znc/znc"
-LABEL org.label-schema.build-date=$BUILD_DATE
 LABEL org.label-schema.url="https://znc.in"
 
 COPY . /znc-src
@@ -22,6 +15,7 @@ RUN set -x \
     && adduser -S znc \
     && addgroup -S znc
 RUN apk add --no-cache \
+        argon2-libs \
         boost \
         build-base \
         ca-certificates \
@@ -29,13 +23,15 @@ RUN apk add --no-cache \
         cyrus-sasl \
         gettext \
         icu-dev \
-        libressl-dev \
+        icu-data-full \
+        openssl-dev \
         perl \
         python3 \
         su-exec \
         tini \
         tzdata
 RUN apk add --no-cache --virtual build-dependencies \
+        argon2-dev \
         boost-dev \
         cyrus-sasl-dev \
         perl-dev \
@@ -50,7 +46,7 @@ RUN apk add --no-cache --virtual build-dependencies \
     && cd / && rm -rf /znc-src
 
 COPY docker/slim/entrypoint.sh /
-COPY docker/*/??-*.sh /startup-sequence/
+COPY docker/*/??-*.sh docker/*/startup-sequence/??-*.sh /startup-sequence/
 
 VOLUME /znc-data
 

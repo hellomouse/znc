@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ CZNC::CZNC()
       m_uiConnectDelay(5),
       m_uiAnonIPLimit(10),
       m_uiMaxBufferSize(500),
-      m_uDisabledSSLProtocols(Csock::EDP_SSL),
+      m_uDisabledSSLProtocols(Csock::EDP_SSL | Csock::EDP_TLSv1 | Csock::EDP_TLSv1_1),
       m_pModules(new CModules),
       m_uBytesRead(0),
       m_uBytesWritten(0),
@@ -134,15 +134,7 @@ CString CZNC::GetTag(bool bIncludeVersion, bool bHTML) {
 }
 
 CString CZNC::GetCompileOptionsString() {
-    // Build system doesn't affect ABI
-    return ZNC_COMPILE_OPTIONS_STRING + CString(
-                                            ", build: "
-#ifdef BUILD_WITH_CMAKE
-                                            "cmake"
-#else
-                                            "autoconf"
-#endif
-                                            );
+    return ZNC_COMPILE_OPTIONS_STRING;
 }
 
 CString CZNC::GetUptime() const {
@@ -169,7 +161,7 @@ bool CZNC::HandleUserDeletion() {
             pUser->SetBeingDeleted(false);
             continue;
         }
-        m_msUsers.erase(pUser->GetUserName());
+        m_msUsers.erase(pUser->GetUsername());
         CWebSock::FinishUserSessions(*pUser);
         delete pUser;
     }
@@ -573,7 +565,7 @@ bool CZNC::WriteConfig() {
             continue;
         }
 
-        config.AddSubConfig("User", it.second->GetUserName(),
+        config.AddSubConfig("User", it.second->GetUsername(),
                             it.second->ToConfig());
     }
 
@@ -661,14 +653,14 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
                                      65534)) {
                 continue;
             }
-            if (uListenPort == 6667) {
+            if (uListenPort == 6667 || uListenPort == 6697) {
                 CUtils::PrintStatus(false,
-                                    "WARNING: Some web browsers reject port "
-                                    "6667. If you intend to");
+                                    "WARNING: Some web browsers reject ports "
+                                    "6667 and 6697. If you intend to");
                 CUtils::PrintStatus(false,
                                     "use ZNC's web interface, you might want "
                                     "to use another port.");
-                if (!CUtils::GetBoolInput("Proceed with port 6667 anyway?",
+                if (!CUtils::GetBoolInput("Proceed anyway?",
                                           true)) {
                     continue;
                 }
@@ -739,17 +731,15 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
     CString sNick;
     do {
         CUtils::GetInput("Username", sUser, "", "alphanumeric");
-    } while (!CUser::IsValidUserName(sUser));
+    } while (!CUser::IsValidUsername(sUser));
 
     vsLines.push_back("<User " + sUser + ">");
-    CString sSalt;
-    sAnswer = CUtils::GetSaltedHashPass(sSalt);
-    vsLines.push_back("\tPass       = " + CUtils::sDefaultHash + "#" + sAnswer +
-                      "#" + sSalt + "#");
+    sAnswer = CUtils::AskSaltedHashPassForConfig();
+	vsLines.push_back(sAnswer);
 
     vsLines.push_back("\tAdmin      = true");
 
-    CUtils::GetInput("Nick", sNick, CUser::MakeCleanUserName(sUser));
+    CUtils::GetInput("Nick", sNick, CUser::MakeCleanUsername(sUser));
     vsLines.push_back("\tNick       = " + sNick);
     CUtils::GetInput("Alternate nick", sAnswer, sNick + "_");
     if (!sAnswer.empty()) {
@@ -786,7 +776,7 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
         CUtils::PrintMessage("");
 
         do {
-            CUtils::GetInput("Name", sNetwork, "freenode");
+            CUtils::GetInput("Name", sNetwork, "libera");
         } while (!CIRCNetwork::IsValidNetwork(sNetwork));
 
         vsLines.push_back("\t<Network " + sNetwork + ">");
@@ -803,8 +793,8 @@ bool CZNC::WriteNewConfig(const CString& sConfigFile) {
         bool bSSL = false;
         unsigned int uServerPort = 0;
 
-        if (sNetwork.Equals("freenode")) {
-            sHost = "chat.freenode.net";
+        if (sNetwork.Equals("libera")) {
+            sHost = "irc.libera.chat";
 #ifdef HAVE_LIBSSL
             bSSL = true;
 #endif
@@ -1060,6 +1050,7 @@ bool CZNC::ReadConfig(CConfig& config, CString& sError) {
     // create a backup file if necessary
     CString sSavedVersion;
     config.FindStringEntry("version", sSavedVersion);
+    config.AddKeyValuePair("version", sSavedVersion);
     if (sSavedVersion.empty()) {
         CUtils::PrintError(
             "Config does not contain a version identifier. It may be be too "
@@ -1102,20 +1093,28 @@ bool CZNC::RehashConfig(CString& sError) {
 bool CZNC::LoadGlobal(CConfig& config, CString& sError) {
     sError.clear();
 
+    CString sSavedVersion;
+    config.FindStringEntry("version", sSavedVersion);
+    tuple<unsigned int, unsigned int> tSavedVersion =
+        make_tuple(sSavedVersion.Token(0, false, ".").ToUInt(),
+                   sSavedVersion.Token(1, false, ".").ToUInt());
+
     MCString msModules;  // Modules are queued for later loading
 
     VCString vsList;
     config.FindStringVector("loadmodule", vsList);
+
+    // Automatically load corecaps if config was upgraded from old version, but
+    // don't force it if user explicitly unloaded it
+    if (tSavedVersion < make_tuple(1, 9)) {
+        vsList.push_back("corecaps");
+    }
+
     for (const CString& sModLine : vsList) {
         CString sModName = sModLine.Token(0);
         CString sArgs = sModLine.Token(1, true);
 
         // compatibility for pre-1.0 configs
-        CString sSavedVersion;
-        config.FindStringEntry("version", sSavedVersion);
-        tuple<unsigned int, unsigned int> tSavedVersion =
-            make_tuple(sSavedVersion.Token(0, false, ".").ToUInt(),
-                       sSavedVersion.Token(1, false, ".").ToUInt());
         if (sModName == "saslauth" && tSavedVersion < make_tuple(0, 207)) {
             CUtils::PrintMessage(
                 "saslauth module was renamed to cyrusauth. Loading cyrusauth "
@@ -1246,12 +1245,12 @@ bool CZNC::LoadUsers(CConfig& config, CString& sError) {
     config.FindSubConfig("user", subConf);
 
     for (const auto& subIt : subConf) {
-        const CString& sUserName = subIt.first;
+        const CString& sUsername = subIt.first;
         CConfig* pSubConf = subIt.second.m_pSubConfig;
 
-        CUtils::PrintMessage("Loading user [" + sUserName + "]");
+        CUtils::PrintMessage("Loading user [" + sUsername + "]");
 
-        std::unique_ptr<CUser> pUser(new CUser(sUserName));
+        std::unique_ptr<CUser> pUser(new CUser(sUsername));
 
         if (!m_sStatusPrefix.empty()) {
             if (!pUser->SetStatusPrefix(m_sStatusPrefix)) {
@@ -1268,7 +1267,7 @@ bool CZNC::LoadUsers(CConfig& config, CString& sError) {
         }
 
         if (!pSubConf->empty()) {
-            sError = "Unhandled lines in config for User [" + sUserName + "]!";
+            sError = "Unhandled lines in config for User [" + sUsername + "]!";
             CUtils::PrintError(sError);
             DumpConfig(pSubConf);
             return false;
@@ -1277,7 +1276,7 @@ bool CZNC::LoadUsers(CConfig& config, CString& sError) {
         CString sErr;
         CUser* pRawUser = pUser.release();
         if (!AddUser(pRawUser, sErr, true)) {
-            sError = "Invalid user [" + sUserName + "] " + sErr;
+            sError = "Invalid user [" + sUsername + "] " + sErr;
             CUtils::PrintError(sError);
             pRawUser->SetBeingDeleted(true);
             delete pRawUser;
@@ -1512,7 +1511,7 @@ bool CZNC::UpdateModule(const CString& sModule) {
         if (!pUser->GetModules().LoadModule(
                 sModule, sArgs, CModInfo::UserModule, pUser, nullptr, sErr)) {
             DEBUG("Failed to reload [" << sModule << "] for ["
-                                       << pUser->GetUserName() << "] [" << sErr
+                                       << pUser->GetUsername() << "] [" << sErr
                                        << "]");
             bError = true;
         }
@@ -1527,7 +1526,7 @@ bool CZNC::UpdateModule(const CString& sModule) {
                 sModule, sArgs, CModInfo::NetworkModule, pNetwork->GetUser(),
                 pNetwork, sErr)) {
             DEBUG("Failed to reload ["
-                  << sModule << "] for [" << pNetwork->GetUser()->GetUserName()
+                  << sModule << "] for [" << pNetwork->GetUser()->GetUsername()
                   << "/" << pNetwork->GetName() << "] [" << sErr << "]");
             bError = true;
         }
@@ -1553,18 +1552,18 @@ bool CZNC::DeleteUser(const CString& sUsername) {
         return false;
     }
 
-    m_msDelUsers[pUser->GetUserName()] = pUser;
+    m_msDelUsers[pUser->GetUsername()] = pUser;
     return true;
 }
 
 bool CZNC::AddUser(CUser* pUser, CString& sErrorRet, bool bStartup) {
-    if (FindUser(pUser->GetUserName()) != nullptr) {
+    if (FindUser(pUser->GetUsername()) != nullptr) {
         sErrorRet = t_s("User already exists");
-        DEBUG("User [" << pUser->GetUserName() << "] - already exists");
+        DEBUG("User [" << pUser->GetUsername() << "] - already exists");
         return false;
     }
     if (!pUser->IsValid(sErrorRet)) {
-        DEBUG("Invalid user [" << pUser->GetUserName() << "] - [" << sErrorRet
+        DEBUG("Invalid user [" << pUser->GetUsername() << "] - [" << sErrorRet
                                << "]");
         return false;
     }
@@ -1576,11 +1575,11 @@ bool CZNC::AddUser(CUser* pUser, CString& sErrorRet, bool bStartup) {
     }
 
     if (bFailed) {
-        DEBUG("AddUser [" << pUser->GetUserName() << "] aborted by a module ["
+        DEBUG("AddUser [" << pUser->GetUsername() << "] aborted by a module ["
                           << sErrorRet << "]");
         return false;
     }
-    m_msUsers[pUser->GetUserName()] = pUser;
+    m_msUsers[pUser->GetUsername()] = pUser;
     return true;
 }
 
@@ -1863,8 +1862,8 @@ CZNC::TrafficStatsMap CZNC::GetTrafficStats(TrafficStatsPair& Users,
         }
 
         if (pUser) {
-            ret[pUser->GetUserName()].first += pSock->GetBytesRead();
-            ret[pUser->GetUserName()].second += pSock->GetBytesWritten();
+            ret[pUser->GetUsername()].first += pSock->GetBytesRead();
+            ret[pUser->GetUsername()].second += pSock->GetBytesWritten();
             uiUsers_in += pSock->GetBytesRead();
             uiUsers_out += pSock->GetBytesWritten();
         } else {
@@ -2091,18 +2090,36 @@ void CZNC::ForceEncoding() {
     m_uiForceEncoding++;
 #ifdef HAVE_ICU
     for (Csock* pSock : GetManager()) {
-        if (pSock->GetEncoding().empty()) {
-            pSock->SetEncoding("UTF-8");
-        }
+        pSock->SetEncoding(FixupEncoding(pSock->GetEncoding()));
     }
 #endif
 }
 void CZNC::UnforceEncoding() { m_uiForceEncoding--; }
 bool CZNC::IsForcingEncoding() const { return m_uiForceEncoding; }
 CString CZNC::FixupEncoding(const CString& sEncoding) const {
-    if (sEncoding.empty() && m_uiForceEncoding) {
+    if (!m_uiForceEncoding) {
+        return sEncoding;
+    }
+    if (sEncoding.empty()) {
         return "UTF-8";
     }
+    const char* sRealEncoding = sEncoding.c_str();
+    if (sEncoding[0] == '*' || sEncoding[0] == '^') {
+        sRealEncoding++;
+    }
+    if (!*sRealEncoding) {
+        return "UTF-8";
+    }
+#ifdef HAVE_ICU
+    UErrorCode e = U_ZERO_ERROR;
+    UConverter* cnv = ucnv_open(sRealEncoding, &e);
+    if (cnv) {
+        ucnv_close(cnv);
+    }
+    if (U_FAILURE(e)) {
+        return "UTF-8";
+    }
+#endif
     return sEncoding;
 }
 

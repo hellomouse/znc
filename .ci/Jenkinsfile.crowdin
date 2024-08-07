@@ -2,7 +2,7 @@
 // This script is run daily by https://jenkins.znc.in/ to:
 // * upload new English strings to https://crowdin.com/project/znc-bouncer
 // * download new translations
-// * create a pull request with results to ZNC repo
+// * commits results to ZNC repo
 
 import groovy.json.JsonSlurper;
 import groovy.json.JsonOutput;
@@ -11,7 +11,7 @@ def upstream_user = 'znc'
 def upstream_repo = 'znc'
 def my_user = 'znc-jenkins'
 def my_repo = 'znc'
-def branches = ['master', '1.7.x']
+def branches = ['master', '1.9.x']
 
 def pr_mode = false
 
@@ -30,7 +30,7 @@ timestamps {
           stage(upstream_branch) {
             dir(upstream_branch) {
               stage("Checkout ${upstream_branch}") {
-                checkout([$class: 'GitSCM', branches: [[name: "*/${upstream_branch}"]], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'SubmoduleOption', recursiveSubmodules: true]], userRemoteConfigs: [[credentialsId: '6ef10f80-20dc-4661-af45-52a6e1e15749', name: 'upstream', url: "github.com:${upstream_user}/${upstream_repo}.git"]]])
+                checkout([$class: 'GitSCM', branches: [[name: "*/${upstream_branch}"]], doGenerateSubmoduleConfigurations: false, extensions: [[$class: 'SubmoduleOption', recursiveSubmodules: true]], userRemoteConfigs: [[credentialsId: '6ef10f80-20dc-4661-af45-52a6e1e15749', name: 'upstream', url: "git@github.com:${upstream_user}/${upstream_repo}.git"]]])
               }
               stage("Prepare strings for ${upstream_branch}") {
                 dir("build") {
@@ -50,6 +50,13 @@ timestamps {
                 }
                 sh 'LANG=C.UTF-8 find . -name "*.po" -exec msgfilter -i "{}" -o "{}.replacement" .ci/cleanup-po.pl ";"'
                 sh 'find . -name "*.po" -exec mv "{}.replacement" "{}" ";"'
+                withCredentials([string(credentialsId: 'fe727e3e-a8e0-4019-817f-6583c3c51ef7', variable: 'CROWDIN_API2_KEY')]) {
+                  def headers = [[maskValue: true, name: 'Authorization', value: "Bearer ${env.CROWDIN_API2_KEY}"], [maskValue: false, name: 'User-Agent', value: 'https://github.com/znc/znc/blob/master/.ci/Jenkinsfile.crowdin']]
+                  def contributors = httpRequest consoleLogResponseBody: true, customHeaders: headers, url: "https://crowdin.com/api/v2/projects/289533/members?limit=500"
+                  writeFile file: 'contributors.tmp', text: contributors.content
+                }
+                sh '.ci/crowdin-contributors.py < contributors.tmp'
+                sh 'rm contributors.tmp'
               }
               stage("Push ${upstream_branch}") {
                 sh 'git config user.name "ZNC-Jenkins"'
@@ -67,24 +74,15 @@ timestamps {
                   echo 'No changes found'
                   return
                 }
-                sh "git remote add my github.com:${my_user}/${my_repo}.git"
-                // TODO simplify when https://issues.jenkins-ci.org/browse/JENKINS-28335 is fixed
+                sh "git remote add my git@github.com:${my_user}/${my_repo}.git"
                 if (!pr_mode) {
-                  withCredentials([sshUserPrivateKey(credentialsId: 'baf2df74-935d-40e5-b20f-076e92fa3e9f', keyFileVariable: 'GITHUB_KEY')]) {
-                    sh 'echo ssh -i $GITHUB_KEY -l git -o StrictHostKeyChecking=no \\"\\$@\\" > run_ssh.sh'
-                    sh 'chmod +x run_ssh.sh'
-                    withEnv(['GIT_SSH=run_ssh.sh']) {
-                      sh "git push upstream HEAD:refs/heads/${upstream_branch}"
-                    }
+                  sshagent(credentials: ['baf2df74-935d-40e5-b20f-076e92fa3e9f']) {
+                    sh "git push upstream HEAD:refs/heads/${upstream_branch}"
                   }
                   return
                 }
-                withCredentials([sshUserPrivateKey(credentialsId: '6ef10f80-20dc-4661-af45-52a6e1e15749', keyFileVariable: 'GITHUB_KEY')]) {
-                  sh 'echo ssh -i $GITHUB_KEY -l git -o StrictHostKeyChecking=no \\"\\$@\\" > run_ssh.sh'
-                  sh 'chmod +x run_ssh.sh'
-                  withEnv(['GIT_SSH=run_ssh.sh']) {
-                    sh "git push my HEAD:refs/heads/${my_branch} -f"
-                  }
+                sshagent(credentials: ['6ef10f80-20dc-4661-af45-52a6e1e15749']) {
+                  sh "git push my HEAD:refs/heads/${my_branch} -f"
                 }
                 // Create pull request if it doesn't exist yet
                 withCredentials([string(credentialsId: '7a2546ae-8a29-4eab-921c-6a4803456dce', variable: 'GITHUB_OAUTH_KEY')]) {

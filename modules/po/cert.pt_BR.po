@@ -3,19 +3,19 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: crowdin.com\n"
 "X-Crowdin-Project: znc-bouncer\n"
+"X-Crowdin-Project-ID: 289533\n"
 "X-Crowdin-Language: pt-BR\n"
 "X-Crowdin-File: /master/modules/po/cert.pot\n"
+"X-Crowdin-File-ID: 161\n"
 "Project-Id-Version: znc-bouncer\n"
-"Last-Translator: DarthGandalf <alexey+crowdin@asokolov.org>\n"
 "Language-Team: Portuguese, Brazilian\n"
 "Language: pt_BR\n"
 
 #  this text is inserted into `click here` in the other string
 #: modules/po/../data/cert/tmpl/index.tmpl:5
 msgid "here"
-msgstr ""
+msgstr "aqui"
 
 #  {1} is `here`, translateable in the other string
 #: modules/po/../data/cert/tmpl/index.tmpl:6
@@ -26,23 +26,23 @@ msgstr ""
 
 #: modules/po/../data/cert/tmpl/index.tmpl:8
 msgid "You do not have a certificate yet."
-msgstr ""
+msgstr "Você não possui um certificado."
 
 #: modules/po/../data/cert/tmpl/index.tmpl:14 cert.cpp:72
 msgid "Certificate"
-msgstr ""
+msgstr "Certificado"
 
 #: modules/po/../data/cert/tmpl/index.tmpl:18
 msgid "PEM File:"
-msgstr ""
+msgstr "Arquivo PEM:"
 
 #: modules/po/../data/cert/tmpl/index.tmpl:22
 msgid "Update"
-msgstr ""
+msgstr "Atualizar"
 
 #: cert.cpp:28
 msgid "Pem file deleted"
-msgstr ""
+msgstr "Arquivo PEM excluído"
 
 #: cert.cpp:31
 msgid "The pem file doesn't exist or there was a error deleting the pem file."
@@ -50,7 +50,7 @@ msgstr ""
 
 #: cert.cpp:38
 msgid "You have a certificate in {1}"
-msgstr ""
+msgstr "Você possui um certificado em {1}"
 
 #: cert.cpp:41
 msgid ""
@@ -64,12 +64,12 @@ msgstr ""
 
 #: cert.cpp:52
 msgid "Delete the current certificate"
-msgstr ""
+msgstr "Excluir o certificado atual"
 
 #: cert.cpp:54
 msgid "Show the current certificate"
-msgstr ""
+msgstr "Exibir o certificado atual"
 
 #: cert.cpp:105
 msgid "Use a ssl certificate to connect to a server"
-msgstr ""
+msgstr "Utilizar um certificado SSL para conectar-se a um servidor"

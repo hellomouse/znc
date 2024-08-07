@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,13 +25,17 @@
 #include <time.h>
 #include <algorithm>
 
+#ifdef ZNC_HAVE_ARGON
+#include <argon2.h>
+#endif
+
 using std::vector;
 using std::set;
 
 class CUserTimer : public CCron {
   public:
     CUserTimer(CUser* pUser) : CCron(), m_pUser(pUser) {
-        SetName("CUserTimer::" + m_pUser->GetUserName());
+        SetName("CUserTimer::" + m_pUser->GetUsername());
         Start(m_pUser->GetPingSlack());
     }
     ~CUserTimer() override {}
@@ -59,12 +63,12 @@ class CUserTimer : public CCron {
     CUser* m_pUser;
 };
 
-CUser::CUser(const CString& sUserName)
-    : m_sUserName(sUserName),
-      m_sCleanUserName(MakeCleanUserName(sUserName)),
-      m_sNick(m_sCleanUserName),
+CUser::CUser(const CString& sUsername)
+    : m_sUsername(sUsername),
+      m_sCleanUsername(MakeCleanUsername(sUsername)),
+      m_sNick(m_sCleanUsername),
       m_sAltNick(""),
-      m_sIdent(m_sCleanUserName),
+      m_sIdent(m_sCleanUsername),
       m_sRealName(""),
       m_sBindHost(""),
       m_sDCCBindHost(""),
@@ -78,11 +82,16 @@ CUser::CUser(const CString& sUserName)
       m_sTimestampFormat("[%H:%M:%S]"),
       m_sTimezone(""),
       m_eHashType(HASH_NONE),
-      m_sUserPath(CZNC::Get().GetUserPath() + "/" + sUserName),
+      m_sUserPath(CZNC::Get().GetUserPath() + "/" + sUsername),
       m_bMultiClients(true),
       m_bDenyLoadMod(false),
       m_bAdmin(false),
       m_bDenySetBindHost(false),
+      m_bDenySetIdent(false),
+      m_bDenySetNetwork(false),
+      m_bDenySetRealName(false),
+      m_bDenySetQuitMsg(false),
+      m_bDenySetCTCPReplies(false),
       m_bAutoClearChanBuffer(true),
       m_bAutoClearQueryBuffer(true),
       m_bBeingDeleted(false),
@@ -130,11 +139,13 @@ CUser::~CUser() {
     CZNC::Get().AddBytesWritten(m_uBytesWritten);
 }
 
+namespace {
 template <class T>
 struct TOption {
     const char* name;
     void (CUser::*pSetter)(T);
 };
+}
 
 bool CUser::ParseConfig(CConfig* pConfig, CString& sError) {
     TOption<const CString&> StringOptions[] = {
@@ -169,6 +180,11 @@ bool CUser::ParseConfig(CConfig* pConfig, CString& sError) {
         {"admin", &CUser::SetAdmin},
         {"denysetbindhost", &CUser::SetDenySetBindHost},
         {"denysetvhost", &CUser::SetDenySetBindHost},
+        {"denysetident", &CUser::SetDenySetIdent},
+        {"denysetnetwork", &CUser::SetDenySetNetwork},
+        {"denysetrealname", &CUser::SetDenySetRealName},
+        {"denysetquitmsg", &CUser::SetDenySetQuitMsg},
+        {"denysetctcpreplies", &CUser::SetDenySetCTCPReplies},
         {"appendtimestamp", &CUser::SetTimestampAppend},
         {"prependtimestamp", &CUser::SetTimestampPrepend},
         {"authonlyviamodule", &CUser::SetAuthOnlyViaModule},
@@ -334,7 +350,12 @@ bool CUser::ParseConfig(CConfig* pConfig, CString& sError) {
             method = CUser::HASH_MD5;
         else if (sMethod.Equals("sha256"))
             method = CUser::HASH_SHA256;
-        else {
+        else if (sMethod.Equals("Argon2id")) {
+            method = CUser::HASH_ARGON2ID;
+#ifndef ZNC_HAVE_ARGON
+            CUtils::PrintError("ZNC is built without Argon2 support, " + GetUsername() + " won't be able to authenticate");
+#endif
+        } else {
             sError = "Invalid hash method";
             CUtils::PrintError(sError);
             return false;
@@ -588,7 +609,7 @@ CString& CUser::ExpandString(const CString& sStr, CString& sRet) const {
     sRet.Replace("%realname%", GetRealName());
     sRet.Replace("%time%", sTime);
     sRet.Replace("%uptime%", CZNC::Get().GetUptime());
-    sRet.Replace("%user%", GetUserName());
+    sRet.Replace("%user%", GetUsername());
     sRet.Replace("%version%", CZNC::GetVersion());
     sRet.Replace("%vhost%", GetBindHost());
     sRet.Replace("%znc%", CZNC::GetTag(false));
@@ -734,9 +755,9 @@ bool CUser::Clone(const CUser& User, CString& sErrorRet, bool bCloneNetworks) {
 
     // user names can only specified for the constructor, changing it later
     // on breaks too much stuff (e.g. lots of paths depend on the user name)
-    if (GetUserName() != User.GetUserName()) {
+    if (GetUsername() != User.GetUsername()) {
         DEBUG("Ignoring username in CUser::Clone(), old username ["
-              << GetUserName() << "]; New username [" << User.GetUserName()
+              << GetUsername() << "]; New username [" << User.GetUsername()
               << "]");
     }
 
@@ -803,6 +824,11 @@ bool CUser::Clone(const CUser& User, CString& sErrorRet, bool bCloneNetworks) {
     SetDenyLoadMod(User.DenyLoadMod());
     SetAdmin(User.IsAdmin());
     SetDenySetBindHost(User.DenySetBindHost());
+    SetDenySetIdent(User.DenySetIdent());
+    SetDenySetNetwork(User.DenySetNetwork());
+    SetDenySetRealName(User.DenySetRealName());
+    SetDenySetQuitMsg(User.DenySetQuitMsg());
+    SetDenySetCTCPReplies(User.DenySetCTCPReplies());
     SetAuthOnlyViaModule(User.AuthOnlyViaModule());
     SetTimestampAppend(User.GetTimestampAppend());
     SetTimestampPrepend(User.GetTimestampPrepend());
@@ -877,11 +903,16 @@ const CString& CUser::GetTimestampFormat() const { return m_sTimestampFormat; }
 bool CUser::GetTimestampAppend() const { return m_bAppendTimestamp; }
 bool CUser::GetTimestampPrepend() const { return m_bPrependTimestamp; }
 
-bool CUser::IsValidUserName(const CString& sUserName) {
-    // /^[a-zA-Z][a-zA-Z@._\-]*$/
-    const char* p = sUserName.c_str();
+bool CUser::IsValidUsername(const CString& sUsername) {
+    return CUser::IsValidUserName(sUsername);
+}
 
-    if (sUserName.empty()) {
+/// @deprecated
+bool CUser::IsValidUserName(const CString& sUsername) {
+    // /^[a-zA-Z][a-zA-Z@._\-]*$/
+    const char* p = sUsername.c_str();
+
+    if (sUsername.empty()) {
         return false;
     }
 
@@ -908,12 +939,12 @@ bool CUser::IsValid(CString& sErrMsg, bool bSkipPass) const {
         return false;
     }
 
-    if (m_sUserName.empty()) {
+    if (m_sUsername.empty()) {
         sErrMsg = t_s("Username is empty");
         return false;
     }
 
-    if (!CUser::IsValidUserName(m_sUserName)) {
+    if (!CUser::IsValidUsername(m_sUsername)) {
         sErrMsg = t_s("Username is invalid");
         return false;
     }
@@ -935,6 +966,9 @@ CConfig CUser::ToConfig() const {
             break;
         case HASH_SHA256:
             sHash = "SHA256";
+            break;
+        case HASH_ARGON2ID:
+            sHash = "Argon2id";
             break;
     }
     passConfig.AddKeyValuePair("Salt", m_sPassSalt);
@@ -963,6 +997,11 @@ CConfig CUser::ToConfig() const {
     config.AddKeyValuePair("DenyLoadMod", CString(DenyLoadMod()));
     config.AddKeyValuePair("Admin", CString(IsAdmin()));
     config.AddKeyValuePair("DenySetBindHost", CString(DenySetBindHost()));
+    config.AddKeyValuePair("DenySetIdent", CString(DenySetIdent()));
+    config.AddKeyValuePair("DenySetNetwork", CString(DenySetNetwork()));
+    config.AddKeyValuePair("DenySetRealName", CString(DenySetRealName()));
+    config.AddKeyValuePair("DenySetQuitMsg", CString(DenySetQuitMsg()));
+    config.AddKeyValuePair("DenySetCTCPReplies", CString(DenySetCTCPReplies()));
     config.AddKeyValuePair("TimestampFormat", GetTimestampFormat());
     config.AddKeyValuePair("AppendTimestamp", CString(GetTimestampAppend()));
     config.AddKeyValuePair("PrependTimestamp", CString(GetTimestampPrepend()));
@@ -1015,26 +1054,49 @@ CConfig CUser::ToConfig() const {
     return config;
 }
 
-bool CUser::CheckPass(const CString& sPass) const {
+bool CUser::CheckPass(const CString& sPass) {
     if(AuthOnlyViaModule() || CZNC::Get().GetAuthOnlyViaModule()) {
         return false;
     }
 
+    bool bResult = false;
+    bool bUpgrade = false;
     switch (m_eHashType) {
         case HASH_MD5:
-            return m_sPass.Equals(CUtils::SaltedMD5Hash(sPass, m_sPassSalt));
+            bResult = m_sPass.Equals(CUtils::SaltedMD5Hash(sPass, m_sPassSalt));
+            bUpgrade = true;
+            break;
         case HASH_SHA256:
-            return m_sPass.Equals(CUtils::SaltedSHA256Hash(sPass, m_sPassSalt));
+            bResult = m_sPass.Equals(CUtils::SaltedSHA256Hash(sPass, m_sPassSalt));
+#if ZNC_HAVE_ARGON
+            bUpgrade = true;
+#endif
+            break;
+        case HASH_ARGON2ID:
+#if ZNC_HAVE_ARGON
+            return argon2id_verify(m_sPass.c_str(), sPass.data(), sPass.length()) == ARGON2_OK;
+#else
+            CUtils::PrintError("ZNC is built without Argon2 support, " + GetUsername() + " cannot authenticate");
+            return false;
+#endif
         case HASH_NONE:
-        default:
+            // Don't upgrade hash, since the only valid use case for plain are
+            // manual tests, where it's simpler this way
             return (sPass == m_sPass);
     }
+
+    if (bResult && bUpgrade) {
+        CString sSalt = CUtils::GetSalt();
+        CString sHash = CUser::SaltedHash(sPass, sSalt);
+        SetPass(sHash, CUser::HASH_DEFAULT, sSalt);
+    }
+    return bResult;
 }
 
 /*CClient* CUser::GetClient() {
     // Todo: optimize this by saving a pointer to the sock
     CSockManager& Manager = CZNC::Get().GetManager();
-    CString sSockName = "USR::" + m_sUserName;
+    CString sSockName = "USR::" + m_sUsername;
 
     for (unsigned int a = 0; a < Manager.size(); a++) {
         Csock* pSock = Manager[a];
@@ -1077,13 +1139,6 @@ bool CUser::PutUser(const CString& sLine, CClient* pClient,
             }
         }
     }
-
-    return (pClient == nullptr);
-}
-
-bool CUser::PutAllUser(const CString& sLine, CClient* pClient,
-                       CClient* pSkipClient) {
-    PutUser(sLine, pClient, pSkipClient);
 
     for (CIRCNetwork* pNetwork : m_vIRCNetworks) {
         pNetwork->PutUser(sLine, pClient, pSkipClient);
@@ -1128,7 +1183,7 @@ bool CUser::PutStatusNotice(const CString& sLine, CClient* pClient,
 
 bool CUser::PutModule(const CString& sModule, const CString& sLine,
                       CClient* pClient, CClient* pSkipClient) {
-    for (CClient* pEachClient : m_vClients) {
+    for (CClient* pEachClient : GetAllClients()) {
         if ((!pClient || pClient == pEachClient) &&
             pSkipClient != pEachClient) {
             pEachClient->PutModule(sModule, sLine);
@@ -1144,7 +1199,7 @@ bool CUser::PutModule(const CString& sModule, const CString& sLine,
 
 bool CUser::PutModNotice(const CString& sModule, const CString& sLine,
                          CClient* pClient, CClient* pSkipClient) {
-    for (CClient* pEachClient : m_vClients) {
+    for (CClient* pEachClient : GetAllClients()) {
         if ((!pClient || pClient == pEachClient) &&
             pSkipClient != pEachClient) {
             pEachClient->PutModNotice(sModule, sLine);
@@ -1158,8 +1213,14 @@ bool CUser::PutModNotice(const CString& sModule, const CString& sLine,
     return (pClient == nullptr);
 }
 
-CString CUser::MakeCleanUserName(const CString& sUserName) {
-    return sUserName.Token(0, false, "@").Replace_n(".", "");
+
+CString CUser::MakeCleanUsername(const CString& sUsername) {
+    return CUser::MakeCleanUserName(sUsername);
+}
+
+/// @deprecated
+CString CUser::MakeCleanUserName(const CString& sUsername) {
+    return sUsername.Token(0, false, "@").Replace_n(".", "");
 }
 
 bool CUser::IsUserAttached() const {
@@ -1243,17 +1304,32 @@ void CUser::SetDCCBindHost(const CString& s) { m_sDCCBindHost = s; }
 void CUser::SetPass(const CString& s, eHashType eHash, const CString& sSalt) {
     m_sPass = s;
     m_eHashType = eHash;
-    m_sPassSalt = sSalt;
+    switch (eHash) {
+        case HASH_NONE:
+        case HASH_ARGON2ID:
+            // Salt is embedded in the encoded "hash" in argon
+            m_sPassSalt = "";
+            break;
+        case HASH_MD5:
+        case HASH_SHA256:
+            m_sPassSalt = sSalt;
+            break;
+    }
 }
 void CUser::SetMultiClients(bool b) { m_bMultiClients = b; }
 void CUser::SetDenyLoadMod(bool b) { m_bDenyLoadMod = b; }
 void CUser::SetAdmin(bool b) { m_bAdmin = b; }
 void CUser::SetDenySetBindHost(bool b) { m_bDenySetBindHost = b; }
+void CUser::SetDenySetIdent(bool b) { m_bDenySetIdent = b; }
+void CUser::SetDenySetNetwork(bool b) { m_bDenySetNetwork = b; }
+void CUser::SetDenySetRealName(bool b) { m_bDenySetRealName = b; }
+void CUser::SetDenySetQuitMsg(bool b) { m_bDenySetQuitMsg = b; }
+void CUser::SetDenySetCTCPReplies(bool b) { m_bDenySetCTCPReplies = b; }
 void CUser::SetDefaultChanModes(const CString& s) { m_sDefaultChanModes = s; }
 void CUser::SetClientEncoding(const CString& s) {
-    m_sClientEncoding = s;
+    m_sClientEncoding = CZNC::Get().FixupEncoding(s);
     for (CClient* pClient : GetAllClients()) {
-        pClient->SetEncoding(s);
+        pClient->SetEncoding(m_sClientEncoding);
     }
 }
 void CUser::SetQuitMsg(const CString& s) { m_sQuitMsg = s; }
@@ -1354,8 +1430,10 @@ vector<CClient*> CUser::GetAllClients() const {
     return vClients;
 }
 
-const CString& CUser::GetUserName() const { return m_sUserName; }
-const CString& CUser::GetCleanUserName() const { return m_sCleanUserName; }
+/// @deprecated
+const CString& CUser::GetUserName() const { return m_sUsername; }
+const CString& CUser::GetUsername() const { return m_sUsername; }
+const CString& CUser::GetCleanUserName() const { return m_sCleanUsername; }
 const CString& CUser::GetNick(bool bAllowDefault) const {
     return (bAllowDefault && m_sNick.empty()) ? GetCleanUserName() : m_sNick;
 }
@@ -1380,6 +1458,11 @@ const CString& CUser::GetPassSalt() const { return m_sPassSalt; }
 bool CUser::DenyLoadMod() const { return m_bDenyLoadMod; }
 bool CUser::IsAdmin() const { return m_bAdmin; }
 bool CUser::DenySetBindHost() const { return m_bDenySetBindHost; }
+bool CUser::DenySetIdent() const { return m_bDenySetIdent; }
+bool CUser::DenySetNetwork() const { return m_bDenySetNetwork; }
+bool CUser::DenySetRealName() const { return m_bDenySetRealName; }
+bool CUser::DenySetQuitMsg() const { return m_bDenySetQuitMsg; }
+bool CUser::DenySetCTCPReplies() const { return m_bDenySetCTCPReplies; }
 bool CUser::MultiClients() const { return m_bMultiClients; }
 bool CUser::AuthOnlyViaModule() const { return m_bAuthOnlyViaModule; }
 const CString& CUser::GetStatusPrefix() const { return m_sStatusPrefix; }

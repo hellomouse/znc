@@ -3,18 +3,18 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: crowdin.com\n"
 "X-Crowdin-Project: znc-bouncer\n"
+"X-Crowdin-Project-ID: 289533\n"
 "X-Crowdin-Language: pt-BR\n"
 "X-Crowdin-File: /master/modules/po/stickychan.pot\n"
+"X-Crowdin-File-ID: 202\n"
 "Project-Id-Version: znc-bouncer\n"
-"Last-Translator: DarthGandalf <alexey+crowdin@asokolov.org>\n"
 "Language-Team: Portuguese, Brazilian\n"
 "Language: pt_BR\n"
 
 #: modules/po/../data/stickychan/tmpl/index.tmpl:9
 msgid "Name"
-msgstr ""
+msgstr "Nome"
 
 #: modules/po/../data/stickychan/tmpl/index.tmpl:10
 msgid "Sticky"
@@ -22,11 +22,11 @@ msgstr ""
 
 #: modules/po/../data/stickychan/tmpl/index.tmpl:25
 msgid "Save"
-msgstr ""
+msgstr "Salvar"
 
 #: modules/po/../data/stickychan/tmpl/stickychan_WebadminChan.tmpl:8
 msgid "Channel is sticky"
-msgstr ""
+msgstr "Canal afixado"
 
 #: stickychan.cpp:28
 msgid "<#channel> [key]"
@@ -34,7 +34,7 @@ msgstr ""
 
 #: stickychan.cpp:28
 msgid "Sticks a channel"
-msgstr ""
+msgstr "Afixa um canal"
 
 #: stickychan.cpp:30
 msgid "<#channel>"
@@ -42,15 +42,15 @@ msgstr ""
 
 #: stickychan.cpp:30
 msgid "Unsticks a channel"
-msgstr ""
+msgstr "Desafixa um canal"
 
 #: stickychan.cpp:32
 msgid "Lists sticky channels"
-msgstr ""
+msgstr "Listar canais afixados"
 
 #: stickychan.cpp:75
 msgid "Usage: Stick <#channel> [key]"
-msgstr ""
+msgstr "Sintaxe: Stick <#canal> [senha]"
 
 #: stickychan.cpp:79
 msgid "Stuck {1}"
@@ -58,7 +58,7 @@ msgstr ""
 
 #: stickychan.cpp:85
 msgid "Usage: Unstick <#channel>"
-msgstr ""
+msgstr "Sintaxe: Unstick <#canal>"
 
 #: stickychan.cpp:89
 msgid "Unstuck {1}"
@@ -74,7 +74,7 @@ msgstr ""
 
 #: stickychan.cpp:128
 msgid "Sticky Channels"
-msgstr ""
+msgstr "Canais afixados"
 
 #: stickychan.cpp:160
 msgid "Changes have been saved!"

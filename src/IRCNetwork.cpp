@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -34,7 +34,7 @@ class CIRCNetworkPingTimer : public CCron {
     CIRCNetworkPingTimer(CIRCNetwork* pNetwork)
         : CCron(), m_pNetwork(pNetwork) {
         SetName("CIRCNetworkPingTimer::" +
-                m_pNetwork->GetUser()->GetUserName() + "::" +
+                m_pNetwork->GetUser()->GetUsername() + "::" +
                 m_pNetwork->GetName());
         Start(m_pNetwork->GetUser()->GetPingSlack());
     }
@@ -77,7 +77,7 @@ class CIRCNetworkJoinTimer : public CCron {
     CIRCNetworkJoinTimer(CIRCNetwork* pNetwork)
         : CCron(), m_bDelayed(false), m_pNetwork(pNetwork) {
         SetName("CIRCNetworkJoinTimer::" +
-                m_pNetwork->GetUser()->GetUserName() + "::" +
+                m_pNetwork->GetUser()->GetUsername() + "::" +
                 m_pNetwork->GetName());
         Start(JOIN_FREQUENCY);
     }
@@ -363,11 +363,13 @@ CString CIRCNetwork::GetNetworkPath() const {
     return sNetworkPath;
 }
 
+namespace {
 template <class T>
 struct TOption {
     const char* name;
     void (CIRCNetwork::*pSetter)(T);
 };
+}
 
 bool CIRCNetwork::ParseConfig(CConfig* pConfig, CString& sError,
                               bool bUpgrade) {
@@ -456,6 +458,35 @@ bool CIRCNetwork::ParseConfig(CConfig* pConfig, CString& sError,
             bool bModRet = LoadModule(sModName, sArgs, sNotice, sModRet);
 
             if (!bModRet) {
+                // Q is removed in znc 1.8
+                if (sModName == "q") {
+                    CUtils::PrintError(
+                        "NOTICE: [q] is unavailable, cannot load.");
+                    CUtils::PrintError(
+                        "NOTICE: [q] is removed in this release of ZNC. Please "
+                        "either remove it from your config or install it as a "
+                        "third party module with the same name.");
+                    CUtils::PrintError(
+                        "NOTICE: More info can be found on "
+                        "https://wiki.znc.in/Q");
+                    return false;
+                }
+
+                // Partyline is removed in znc 1.8
+                if (sModName == "partyline") {
+                    CUtils::PrintError(
+                        "NOTICE: [partyline] is unavailable, cannot load.");
+                    CUtils::PrintError(
+                        "NOTICE: [partyline] is removed in this release"
+                        " of ZNC. Please either remove it from your config or "
+                        "install it as a third party module with the same "
+                        "name.");
+                    CUtils::PrintError(
+                        "NOTICE: More info can be found on "
+                        "https://wiki.znc.in/Partyline");
+                    return false;
+                }
+
                 // XXX The awaynick module was retired in 1.6 (still available
                 // as external module)
                 if (sModName == "awaynick") {
@@ -484,8 +515,8 @@ bool CIRCNetwork::ParseConfig(CConfig* pConfig, CString& sError,
     }
 
     pConfig->FindStringVector("server", vsList);
+    CUtils::PrintAction("Adding " + CString(vsList.size()) + " servers");
     for (const CString& sServer : vsList) {
-        CUtils::PrintAction("Adding server [" + sServer + "]");
         CUtils::PrintStatus(AddServer(sServer));
     }
 
@@ -510,7 +541,7 @@ bool CIRCNetwork::ParseConfig(CConfig* pConfig, CString& sError,
 
         if (!pSubConf->empty()) {
             sError = "Unhandled lines in config for User [" +
-                     m_pUser->GetUserName() + "], Network [" + GetName() +
+                     m_pUser->GetUsername() + "], Network [" + GetName() +
                      "], Channel [" + sChanName + "]!";
             CUtils::PrintError(sError);
 
@@ -628,10 +659,6 @@ void CIRCNetwork::ClientConnected(CClient* pClient) {
     m_vClients.push_back(pClient);
 
     size_t uIdx, uSize;
-
-    if (m_pIRCSock) {
-        pClient->NotifyServerDependentCaps(m_pIRCSock->GetAcceptedCaps());
-    }
 
     pClient->SetPlaybackActive(true);
 
@@ -915,6 +942,49 @@ bool CIRCNetwork::DelChan(const CString& sName) {
     }
 
     return false;
+}
+
+bool CIRCNetwork::MoveChan(const CString& sChan, unsigned int uIndex,
+                           CString& sError) {
+    if (uIndex >= m_vChans.size()) {
+        sError = t_s("Invalid index");
+        return false;
+    }
+
+    auto it = m_vChans.begin();
+    for (; it != m_vChans.end(); ++it)
+        if ((*it)->GetName().Equals(sChan)) break;
+    if (it == m_vChans.end()) {
+        sError = t_f("You are not on {1}")(sChan);
+        return false;
+    }
+
+    const auto pChan = *it;
+    m_vChans.erase(it);
+    m_vChans.insert(m_vChans.begin() + uIndex, pChan);
+    return true;
+}
+
+bool CIRCNetwork::SwapChans(const CString& sChan1, const CString& sChan2,
+                            CString& sError) {
+    auto it1 = m_vChans.begin();
+    for (; it1 != m_vChans.end(); ++it1)
+        if ((*it1)->GetName().Equals(sChan1)) break;
+    if (it1 == m_vChans.end()) {
+        sError = t_f("You are not on {1}")(sChan1);
+        return false;
+    }
+
+    auto it2 = m_vChans.begin();
+    for (; it2 != m_vChans.end(); ++it2)
+        if ((*it2)->GetName().Equals(sChan2)) break;
+    if (it2 == m_vChans.end()) {
+        sError = t_f("You are not on {1}")(sChan2);
+        return false;
+    }
+
+    std::swap(*it1, *it2);
+    return true;
 }
 
 void CIRCNetwork::JoinChans() {
@@ -1302,7 +1372,7 @@ bool CIRCNetwork::Connect() {
     pIRCSock->SetTrustAllCerts(GetTrustAllCerts());
     pIRCSock->SetTrustPKI(GetTrustPKI());
 
-    DEBUG("Connecting user/network [" << m_pUser->GetUserName() << "/"
+    DEBUG("Connecting user/network [" << m_pUser->GetUsername() << "/"
                                       << m_sName << "]");
 
     bool bAbort = false;
@@ -1316,7 +1386,7 @@ bool CIRCNetwork::Connect() {
         return false;
     }
 
-    CString sSockName = "IRC::" + m_pUser->GetUserName() + "::" + m_sName;
+    CString sSockName = "IRC::" + m_pUser->GetUsername() + "::" + m_sName;
     CZNC::Get().GetManager().Connect(pServer->GetName(), pServer->GetPort(),
                                      sSockName, 120, bSSL, GetBindHost(),
                                      pIRCSock);
@@ -1332,10 +1402,6 @@ bool CIRCNetwork::IsIRCConnected() const {
 void CIRCNetwork::SetIRCSocket(CIRCSock* pIRCSock) { m_pIRCSock = pIRCSock; }
 
 void CIRCNetwork::IRCConnected() {
-    const SCString& ssCaps = m_pIRCSock->GetAcceptedCaps();
-    for (CClient* pClient : m_vClients) {
-        pClient->NotifyServerDependentCaps(ssCaps);
-    }
     if (m_uJoinDelay > 0) {
         m_pJoinTimer->Delay(m_uJoinDelay);
     } else {
@@ -1344,9 +1410,6 @@ void CIRCNetwork::IRCConnected() {
 }
 
 void CIRCNetwork::IRCDisconnected() {
-    for (CClient* pClient : m_vClients) {
-        pClient->ClearServerDependentCaps();
-    }
     m_pIRCSock = nullptr;
 
     SetIRCServer("");
@@ -1354,6 +1417,17 @@ void CIRCNetwork::IRCDisconnected() {
 
     // Get the reconnect going
     CheckIRCConnect();
+}
+
+void CIRCNetwork::NotifyClientsAboutServerDependentCap(const CString& sCap, bool bValue) {
+    CString sValue = GetIRCSock() ? GetIRCSock()->GetCapLsValue(sCap) : "";
+    for (CClient* pClient : m_vClients) {
+        pClient->NotifyServerDependentCap(sCap, bValue, sValue);
+    }
+}
+
+bool CIRCNetwork::IsServerCapAccepted(const CString& sCap) const {
+    return m_pIRCSock && m_pIRCSock->IsCapAccepted(sCap);
 }
 
 void CIRCNetwork::SetIRCConnectEnabled(bool b) {
@@ -1495,9 +1569,9 @@ void CIRCNetwork::SetBindHost(const CString& s) {
 }
 
 void CIRCNetwork::SetEncoding(const CString& s) {
-    m_sEncoding = s;
+    m_sEncoding = CZNC::Get().FixupEncoding(s);
     if (GetIRCSock()) {
-        GetIRCSock()->SetEncoding(s);
+        GetIRCSock()->SetEncoding(m_sEncoding);
     }
 }
 

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2004-2016 ZNC, see the NOTICE file for details.
+# Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,10 @@
 # limitations under the License.
 #
 
-cmake_minimum_required(VERSION 3.0)
-project(ZNCIntegrationTest)
+cmake_minimum_required(VERSION 3.13)
+project(ZNCIntegrationTest LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED true)
 
 set(CMAKE_THREAD_PREFER_PTHREAD true)
@@ -45,6 +45,7 @@ add_executable(inttest
 target_link_libraries(inttest Qt5::Network Threads::Threads)
 target_include_directories(inttest PUBLIC
 	"${PROJECT_SOURCE_DIR}/framework"
+	"${PROJECT_BINARY_DIR}"
 	"${GTEST_ROOT}" "${GTEST_ROOT}/include"
 	"${GMOCK_ROOT}" "${GMOCK_ROOT}/include")
 target_compile_definitions(inttest PRIVATE

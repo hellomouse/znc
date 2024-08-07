@@ -3,12 +3,12 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: crowdin.com\n"
 "X-Crowdin-Project: znc-bouncer\n"
+"X-Crowdin-Project-ID: 289533\n"
 "X-Crowdin-Language: pt-BR\n"
 "X-Crowdin-File: /master/modules/po/dcc.pot\n"
+"X-Crowdin-File-ID: 170\n"
 "Project-Id-Version: znc-bouncer\n"
-"Last-Translator: DarthGandalf <alexey+crowdin@asokolov.org>\n"
 "Language-Team: Portuguese, Brazilian\n"
 "Language: pt_BR\n"
 
@@ -51,7 +51,7 @@ msgstr ""
 
 #: dcc.cpp:179
 msgid "Usage: Send <nick> <file>"
-msgstr ""
+msgstr "Sintaxe: Send <apelido> <arquivo>"
 
 #: dcc.cpp:186 dcc.cpp:206
 msgid "Illegal path."
@@ -59,12 +59,12 @@ msgstr ""
 
 #: dcc.cpp:199
 msgid "Usage: Get <file>"
-msgstr ""
+msgstr "Sintaxe: Get <arquivo>"
 
 #: dcc.cpp:215 dcc.cpp:232 dcc.cpp:234
 msgctxt "list"
 msgid "Type"
-msgstr ""
+msgstr "Tipo"
 
 #: dcc.cpp:216 dcc.cpp:238 dcc.cpp:241
 msgctxt "list"
@@ -74,22 +74,22 @@ msgstr ""
 #: dcc.cpp:217 dcc.cpp:243
 msgctxt "list"
 msgid "Speed"
-msgstr ""
+msgstr "Velocidade"
 
 #: dcc.cpp:218 dcc.cpp:227
 msgctxt "list"
 msgid "Nick"
-msgstr ""
+msgstr "Apelido"
 
 #: dcc.cpp:219 dcc.cpp:228
 msgctxt "list"
 msgid "IP"
-msgstr ""
+msgstr "IP"
 
 #: dcc.cpp:220 dcc.cpp:229
 msgctxt "list"
 msgid "File"
-msgstr ""
+msgstr "Arquivo"
 
 #: dcc.cpp:232
 msgctxt "list-type"

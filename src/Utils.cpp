@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,6 +29,10 @@
 #include <openssl/ssl.h>
 #include <openssl/bn.h>
 #include <openssl/rsa.h>
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) || (defined(LIBRESSL_VERSION_NUMBER) && (LIBRESSL_VERSION_NUMBER < 0x20700000L))
+#define X509_getm_notBefore X509_get_notBefore
+#define X509_getm_notAfter X509_get_notAfter
+#endif
 #endif /* HAVE_LIBSSL */
 #include <memory>
 #include <unistd.h>
@@ -48,10 +52,17 @@
 #include <unicode/errorcode.h>
 #endif
 
+#ifdef ZNC_HAVE_ARGON
+#include <argon2.h>
+#endif
+
 // Required with GCC 4.3+ if openssl is disabled
 #include <cstring>
 #include <cstdlib>
 #include <iomanip>
+#include <chrono>
+
+#include "cctz/time_zone.h"
 
 using std::map;
 using std::vector;
@@ -95,8 +106,8 @@ void CUtils::GenerateCert(FILE* pOut, const CString& sHost) {
 
     X509_set_version(pCert.get(), 2);
     ASN1_INTEGER_set(X509_get_serialNumber(pCert.get()), serial);
-    X509_gmtime_adj(X509_get_notBefore(pCert.get()), 0);
-    X509_gmtime_adj(X509_get_notAfter(pCert.get()),
+    X509_gmtime_adj(X509_getm_notBefore(pCert.get()), 0);
+    X509_gmtime_adj(X509_getm_notAfter(pCert.get()),
                     (long)60 * 60 * 24 * days * years);
     X509_set_pubkey(pCert.get(), pKey.get());
 
@@ -169,12 +180,24 @@ unsigned long CUtils::GetLongIP(const CString& sIP) {
     return ret;
 }
 
-// If you change this here and in GetSaltedHashPass(),
-// don't forget CUser::HASH_DEFAULT!
-// TODO refactor this
-const CString CUtils::sDefaultHash = "sha256";
-CString CUtils::GetSaltedHashPass(CString& sSalt) {
-    sSalt = GetSalt();
+#ifdef ZNC_HAVE_ARGON
+static CString SaltedArgonHash(const CString& sPass, const CString& sSalt) {
+#define ZNC_ARGON_PARAMS /* iterations */ 6, /* memory */ 6144, /* parallelism */ 1
+    constexpr int iHashLen = 32;
+    CString sOut;
+    sOut.resize(argon2_encodedlen(ZNC_ARGON_PARAMS, sSalt.length(), iHashLen, Argon2_id) + 1);
+    int err = argon2id_hash_encoded(ZNC_ARGON_PARAMS, sPass.data(), sPass.length(), sSalt.data(), sSalt.length(), iHashLen, &sOut[0], sOut.length());
+    if (err) {
+        CUtils::PrintError(argon2_error_message(err));
+        sOut.clear();
+    }
+    return sOut;
+}
+#undef ZNC_ARGON_PARAMS
+#endif
+
+CString CUtils::AskSaltedHashPassForConfig() {
+    CString sSalt = GetSalt();
 
     while (true) {
         CString pass1;
@@ -188,7 +211,18 @@ CString CUtils::GetSaltedHashPass(CString& sSalt) {
             CUtils::PrintError("The supplied passwords did not match");
         } else {
             // Construct the salted pass
-            return SaltedSHA256Hash(pass1, sSalt);
+            VCString vsLines;
+            vsLines.push_back("<Pass password>");
+#if ZNC_HAVE_ARGON
+            vsLines.push_back("\tMethod = Argon2id");
+            vsLines.push_back("\tHash = " + SaltedArgonHash(pass1, sSalt));
+#else
+            vsLines.push_back("\tMethod = SHA256");
+            vsLines.push_back("\tHash = " + SaltedSHA256Hash(pass1, sSalt));
+            vsLines.push_back("\tSalt = " + sSalt);
+#endif
+            vsLines.push_back("</Pass>");
+            return CString("\n").Join(vsLines.begin(), vsLines.end());
         }
     }
 }
@@ -201,6 +235,14 @@ CString CUtils::SaltedMD5Hash(const CString& sPass, const CString& sSalt) {
 
 CString CUtils::SaltedSHA256Hash(const CString& sPass, const CString& sSalt) {
     return CString(sPass + sSalt).SHA256();
+}
+
+CString CUtils::SaltedHash(const CString& sPass, const CString& sSalt) {
+#ifdef ZNC_HAVE_ARGON
+    return SaltedArgonHash(sPass, sSalt);
+#else
+    return SaltedSHA256Hash(sPass, sSalt);
+#endif
 }
 
 CString CUtils::GetPass(const CString& sPrompt) {
@@ -391,29 +433,6 @@ void CUtils::PrintStatus(bool bSuccess, const CString& sMessage) {
     fflush(stdout);
 }
 
-namespace {
-/* Switch GMT-X and GMT+X
- *
- * See https://en.wikipedia.org/wiki/Tz_database#Area
- *
- * "In order to conform with the POSIX style, those zone names beginning
- * with "Etc/GMT" have their sign reversed from what most people expect.
- * In this style, zones west of GMT have a positive sign and those east
- * have a negative sign in their name (e.g "Etc/GMT-14" is 14 hours
- * ahead/east of GMT.)"
- */
-inline CString FixGMT(CString sTZ) {
-    if (sTZ.length() >= 4 && sTZ.StartsWith("GMT")) {
-        if (sTZ[3] == '+') {
-            sTZ[3] = '-';
-        } else if (sTZ[3] == '-') {
-            sTZ[3] = '+';
-        }
-    }
-    return sTZ;
-}
-}  // namespace
-
 timeval CUtils::GetTime() {
 #ifdef HAVE_CLOCK_GETTIME
     timespec ts;
@@ -432,72 +451,27 @@ timeval CUtils::GetTime() {
 }
 
 unsigned long long CUtils::GetMillTime() {
-    struct timeval tv = GetTime();
-    unsigned long long iTime = 0;
-    iTime = (unsigned long long)tv.tv_sec * 1000;
-    iTime += ((unsigned long long)tv.tv_usec / 1000);
-    return iTime;
+    std::chrono::time_point<std::chrono::steady_clock> time = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
 }
 
 CString CUtils::CTime(time_t t, const CString& sTimezone) {
-    char s[30] = {};  // should have at least 26 bytes
-    if (sTimezone.empty()) {
-        ctime_r(&t, s);
-        // ctime() adds a trailing newline
-        return CString(s).Trim_n();
-    }
-    CString sTZ = FixGMT(sTimezone);
-
-    // backup old value
-    char* oldTZ = getenv("TZ");
-    if (oldTZ) oldTZ = strdup(oldTZ);
-    setenv("TZ", sTZ.c_str(), 1);
-    tzset();
-
-    ctime_r(&t, s);
-
-    // restore old value
-    if (oldTZ) {
-        setenv("TZ", oldTZ, 1);
-        free(oldTZ);
-    } else {
-        unsetenv("TZ");
-    }
-    tzset();
-
-    return CString(s).Trim_n();
+    return FormatTime(t, "%c", sTimezone);
 }
 
 CString CUtils::FormatTime(time_t t, const CString& sFormat,
                            const CString& sTimezone) {
-    char s[1024] = {};
-    tm m;
+    cctz::time_zone tz;
     if (sTimezone.empty()) {
-        localtime_r(&t, &m);
-        strftime(s, sizeof(s), sFormat.c_str(), &m);
-        return s;
-    }
-    CString sTZ = FixGMT(sTimezone);
-
-    // backup old value
-    char* oldTZ = getenv("TZ");
-    if (oldTZ) oldTZ = strdup(oldTZ);
-    setenv("TZ", sTZ.c_str(), 1);
-    tzset();
-
-    localtime_r(&t, &m);
-    strftime(s, sizeof(s), sFormat.c_str(), &m);
-
-    // restore old value
-    if (oldTZ) {
-        setenv("TZ", oldTZ, 1);
-        free(oldTZ);
+        tz = cctz::local_time_zone();
+    } else if (sTimezone.StartsWith("GMT")) {
+        int offset = CString(sTimezone.substr(3)).ToInt();
+        tz = cctz::fixed_time_zone(cctz::seconds(offset * 60 * 60));
     } else {
-        unsetenv("TZ");
+        cctz::load_time_zone(sTimezone, &tz);
     }
-    tzset();
 
-    return s;
+    return cctz::format(sFormat, std::chrono::system_clock::from_time_t(t), tz);
 }
 
 CString CUtils::FormatTime(const timeval& tv, const CString& sFormat,
@@ -505,6 +479,7 @@ CString CUtils::FormatTime(const timeval& tv, const CString& sFormat,
     // Parse additional format specifiers before passing them to
     // strftime, since the way strftime treats unknown format
     // specifiers is undefined.
+    // TODO: consider using cctz's %E#f instead.
     CString sFormat2;
 
     // Make sure %% is parsed correctly, i.e. %%f is passed through to
@@ -559,36 +534,21 @@ CString CUtils::FormatTime(const timeval& tv, const CString& sFormat,
 }
 
 CString CUtils::FormatServerTime(const timeval& tv) {
-    CString s_msec(tv.tv_usec / 1000);
-    while (s_msec.length() < 3) {
-        s_msec = "0" + s_msec;
-    }
-    // TODO support leap seconds properly
-    // TODO support message-tags properly
-    struct tm stm;
-    memset(&stm, 0, sizeof(stm));
-    // OpenBSD has tv_sec as int, so explicitly convert it to time_t to make
-    // gmtime_r() happy
-    const time_t secs = tv.tv_sec;
-    gmtime_r(&secs, &stm);
-    char sTime[20] = {};
-    strftime(sTime, sizeof(sTime), "%Y-%m-%dT%H:%M:%S", &stm);
-    return CString(sTime) + "." + s_msec + "Z";
+    using namespace std::chrono;
+    system_clock::time_point time{duration_cast<system_clock::duration>(
+        seconds(tv.tv_sec) + microseconds(tv.tv_usec))};
+    return cctz::format("%Y-%m-%dT%H:%M:%E3SZ", time, cctz::utc_time_zone());
 }
 
 timeval CUtils::ParseServerTime(const CString& sTime) {
-    struct tm stm;
-    memset(&stm, 0, sizeof(stm));
-    const char* cp = strptime(sTime.c_str(), "%Y-%m-%dT%H:%M:%S", &stm);
+    using namespace std::chrono;
+    system_clock::time_point tp;
+    cctz::parse("%Y-%m-%dT%H:%M:%E*SZ", sTime, cctz::utc_time_zone(), &tp);
     struct timeval tv;
     memset(&tv, 0, sizeof(tv));
-    if (cp) {
-        tv.tv_sec = mktime(&stm);
-        CString s_usec(cp);
-        if (s_usec.TrimPrefix(".") && s_usec.TrimSuffix("Z")) {
-            tv.tv_usec = s_usec.ToULong() * 1000;
-        }
-    }
+    microseconds usec = duration_cast<microseconds>(tp.time_since_epoch());
+    tv.tv_sec = usec.count() / 1000000;
+    tv.tv_usec = usec.count() % 1000000;
     return tv;
 }
 
@@ -756,6 +716,8 @@ void CUtils::SetMessageTags(CString& sLine, const MCString& mssTags) {
 }
 
 bool CTable::AddColumn(const CString& sName) {
+    if (eStyle == ListStyle && m_vsHeaders.size() >= 2)
+        return false;
     for (const CString& sHeader : m_vsHeaders) {
         if (sHeader.Equals(sName)) {
             return false;
@@ -765,6 +727,19 @@ bool CTable::AddColumn(const CString& sName) {
     m_vsHeaders.push_back(sName);
     m_msuWidths[sName] = sName.size();
 
+    return true;
+}
+
+bool CTable::SetStyle(EStyle eNewStyle) {
+    switch (eNewStyle) {
+    case GridStyle:
+        break;
+    case ListStyle:
+        if (m_vsHeaders.size() > 2) return false;
+        break;
+    }
+
+    eStyle = eNewStyle;
     return true;
 }
 
@@ -806,6 +781,20 @@ bool CTable::GetLine(unsigned int uIdx, CString& sLine) const {
 
     if (empty()) {
         return false;
+    }
+
+    if (eStyle == ListStyle) {
+        if (m_vsHeaders.size() > 2) return false; // definition list mode can only do up to two columns
+        if (uIdx >= size()) return false;
+
+        const std::vector<CString>& mRow = (*this)[uIdx];
+        ssRet << "\x02" << mRow[0] << "\x0f"; //bold first column
+        if (m_vsHeaders.size() >= 2 && mRow[1] != "") {
+            ssRet << ": " << mRow[1];
+        }
+
+        sLine = ssRet.str();
+        return true;
     }
 
     if (uIdx == 1) {

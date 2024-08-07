@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -159,7 +159,7 @@ void CIRCSock::ReadLine(const CString& sData) {
     sLine.Replace("\n", "");
     sLine.Replace("\r", "");
 
-    DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/"
+    DEBUG("(" << m_pNetwork->GetUser()->GetUsername() << "/"
               << m_pNetwork->GetName() << ") IRC -> ZNC [" << sLine << "]");
 
     bool bReturn = false;
@@ -245,7 +245,9 @@ void CIRCSock::SendNextCap() {
     if (!m_uCapPaused) {
         if (m_ssPendingCaps.empty()) {
             // We already got all needed ACK/NAK replies.
-            PutIRC("CAP END");
+            if (!m_bAuthed) {
+                PutIRC("CAP END");
+            }
         } else {
             CString sCap = *m_ssPendingCaps.begin();
             m_ssPendingCaps.erase(m_ssPendingCaps.begin());
@@ -261,9 +263,9 @@ void CIRCSock::ResumeCap() {
     SendNextCap();
 }
 
-bool CIRCSock::OnServerCapAvailable(const CString& sCap) {
+bool CIRCSock::OnServerCapAvailable(const CString& sCap, const CString& sValue) {
     bool bResult = false;
-    IRCSOCKMODULECALL(OnServerCapAvailable(sCap), &bResult);
+    IRCSOCKMODULECALL(OnServerCapAvailable(sCap, sValue), &bResult);
     return bResult;
 }
 
@@ -346,66 +348,94 @@ bool CIRCSock::OnAwayMessage(CMessage& Message) {
 }
 
 bool CIRCSock::OnCapabilityMessage(CMessage& Message) {
-    // CAPs are supported only before authorization.
-    if (!m_bAuthed) {
-        // The first parameter is most likely "*". No idea why, the
-        // CAP spec don't mention this, but all implementations
-        // I've seen add this extra asterisk
-        CString sSubCmd = Message.GetParam(1);
+    // The first parameter is most likely "*". No idea why, the
+    // CAP spec don't mention this, but all implementations
+    // I've seen add this extra asterisk
+    CString sSubCmd = Message.GetParam(1);
 
-        // If the caplist of a reply is too long, it's split
-        // into multiple replies. A "*" is prepended to show
-        // that the list was split into multiple replies.
-        // This is useful mainly for LS. For ACK and NAK
-        // replies, there's no real need for this, because
-        // we request only 1 capability per line.
-        // If we will need to support broken servers or will
-        // send several requests per line, need to delay ACK
-        // actions until all ACK lines are received and
-        // to recognize past request of NAK by 100 chars
-        // of this reply.
-        CString sArgs;
-        if (Message.GetParam(2) == "*") {
-            sArgs = Message.GetParam(3);
-        } else {
-            sArgs = Message.GetParam(2);
+    // If the caplist of a reply is too long, it's split
+    // into multiple replies. A "*" is prepended to show
+    // that the list was split into multiple replies.
+    // This is useful mainly for LS. For ACK and NAK
+    // replies, there's no real need for this, because
+    // we request only 1 capability per line.
+    // If we will need to support broken servers or will
+    // send several requests per line, need to delay ACK
+    // actions until all ACK lines are received and
+    // to recognize past request of NAK by 100 chars
+    // of this reply.
+    // As for LS, we shouldn't don't send END after receiving first line,
+    // because interesting caps can be on next line.
+    CString sArgs;
+    bool bSendNext = true;
+    if (Message.GetParam(2) == "*") {
+        bSendNext = false;
+        sArgs = Message.GetParam(3);
+    } else {
+        sArgs = Message.GetParam(2);
+    }
+
+    std::map<CString, std::function<void(bool bVal)>> mSupportedCaps = {
+        {"multi-prefix", [this](bool bVal) { m_bNamesx = bVal; }},
+        {"userhost-in-names", [this](bool bVal) { m_bUHNames = bVal; }},
+        {"cap-notify", [](bool bVal) {}},
+        {"server-time", [this](bool bVal) { m_bServerTime = bVal; }},
+        {"znc.in/server-time-iso",
+         [this](bool bVal) { m_bServerTime = bVal; }},
+    };
+
+    auto RemoveCap = [&](const CString& sCap) {
+        IRCSOCKMODULECALL(OnServerCapResult(sCap, false), NOTHING);
+        auto it = mSupportedCaps.find(sCap);
+        if (it != mSupportedCaps.end()) {
+            it->second(false);
         }
+        m_ssAcceptedCaps.erase(sCap);
+        m_ssPendingCaps.erase(sCap);
+    };
 
-        std::map<CString, std::function<void(bool bVal)>> mSupportedCaps = {
-            {"multi-prefix", [this](bool bVal) { m_bNamesx = bVal; }},
-            {"userhost-in-names", [this](bool bVal) { m_bUHNames = bVal; }},
-            {"away-notify", [this](bool bVal) { m_bAwayNotify = bVal; }},
-            {"account-notify", [this](bool bVal) { m_bAccountNotify = bVal; }},
-            {"extended-join", [this](bool bVal) { m_bExtendedJoin = bVal; }},
-            {"server-time", [this](bool bVal) { m_bServerTime = bVal; }},
-            {"znc.in/server-time-iso",
-             [this](bool bVal) { m_bServerTime = bVal; }},
-        };
+    if (sSubCmd == "LS" || sSubCmd == "NEW") {
+        VCString vsTokens;
+        sArgs.Split(" ", vsTokens, false);
 
-        if (sSubCmd == "LS") {
-            VCString vsTokens;
-            sArgs.Split(" ", vsTokens, false);
-
-            for (const CString& sCap : vsTokens) {
-                if (OnServerCapAvailable(sCap) || mSupportedCaps.count(sCap)) {
-                    m_ssPendingCaps.insert(sCap);
-                }
+        for (const CString& sToken : vsTokens) {
+            CString sCap, sValue;
+            int eq = sToken.find('=');
+            if (eq == std::string::npos) {
+                sCap = sToken;
+            } else {
+                sCap = sToken.substr(0, eq);
+                sValue = sToken.substr(eq + 1);
             }
-        } else if (sSubCmd == "ACK") {
-            sArgs.Trim();
-            IRCSOCKMODULECALL(OnServerCapResult(sArgs, true), NOTHING);
-            const auto& it = mSupportedCaps.find(sArgs);
-            if (it != mSupportedCaps.end()) {
-                it->second(true);
+            m_msCapLsValues[sCap] = sValue;
+            if (OnServerCapAvailable(sCap, sValue) || mSupportedCaps.count(sCap)) {
+                m_ssPendingCaps.insert(sCap);
             }
-            m_ssAcceptedCaps.insert(sArgs);
-        } else if (sSubCmd == "NAK") {
-            // This should work because there's no [known]
-            // capability with length of name more than 100 characters.
-            sArgs.Trim();
-            IRCSOCKMODULECALL(OnServerCapResult(sArgs, false), NOTHING);
         }
+    } else if (sSubCmd == "ACK") {
+        sArgs.Trim();
+        IRCSOCKMODULECALL(OnServerCapResult(sArgs, true), NOTHING);
+        auto it = mSupportedCaps.find(sArgs);
+        if (it != mSupportedCaps.end()) {
+            it->second(true);
+        }
+        m_ssAcceptedCaps.insert(sArgs);
+    } else if (sSubCmd == "NAK") {
+        // This should work because there's no [known]
+        // capability with length of name more than 100 characters.
+        sArgs.Trim();
+        RemoveCap(sArgs);
+    } else if (sSubCmd == "DEL") {
+        VCString vsTokens;
+        sArgs.Split(" ", vsTokens, false);
 
+        for (const CString& sCap : vsTokens) {
+            RemoveCap(sCap);
+            m_msCapLsValues.erase(sCap);
+        }
+    }
+
+    if (bSendNext) {
         SendNextCap();
     }
     // Don't forward any CAP stuff to the client
@@ -429,7 +459,12 @@ bool CIRCSock::OnCTCPMessage(CCTCPMessage& Message) {
         if (pChan) {
             Message.SetChan(pChan);
             FixupChanNick(Message.GetNick(), pChan);
-            IRCSOCKMODULECALL(OnChanCTCPMessage(Message), &bResult);
+            if (Message.IsReply()) {
+                IRCSOCKMODULECALL(OnCTCPReplyMessage(Message), &bResult);
+                return bResult;
+            } else {
+                IRCSOCKMODULECALL(OnChanCTCPMessage(Message), &bResult);
+            }
             if (bResult) return true;
         }
     }
@@ -550,24 +585,24 @@ bool CIRCSock::OnKickMessage(CKickMessage& Message) {
 bool CIRCSock::OnModeMessage(CModeMessage& Message) {
     const CNick& Nick = Message.GetNick();
     CString sTarget = Message.GetTarget();
-    CString sModes = Message.GetModes();
+    VCString vsModes = Message.GetModeParams();
+    CString sModes = Message.GetModeList();
 
     CChan* pChan = m_pNetwork->FindChan(sTarget);
     if (pChan) {
-        pChan->ModeChange(sModes, &Nick);
+        pChan->ModeChange(sModes, vsModes, &Nick);
 
         if (pChan->IsDetached()) {
             return true;
         }
     } else if (sTarget == m_Nick.GetNick()) {
-        CString sModeArg = sModes.Token(0);
         bool bAdd = true;
         /* no module call defined (yet?)
                 MODULECALL(OnRawUserMode(*pOpNick, *this, sModeArg, sArgs),
            m_pNetwork->GetUser(), nullptr, );
         */
-        for (unsigned int a = 0; a < sModeArg.size(); a++) {
-            const char& cMode = sModeArg[a];
+        for (unsigned int a = 0; a < sModes.size(); a++) {
+            const char& cMode = sModes[a];
 
             if (cMode == '+') {
                 bAdd = true;
@@ -695,7 +730,6 @@ bool CIRCSock::OnNumericMessage(CNumericMessage& Message) {
             PutIRC("WHO " + sNick);
 
             m_bAuthed = true;
-            m_pNetwork->PutStatus("Connected!");
 
             const vector<CClient*>& vClients = m_pNetwork->GetClients();
 
@@ -713,6 +747,7 @@ bool CIRCSock::OnNumericMessage(CNumericMessage& Message) {
 
             SetNick(sNick);
 
+            m_pNetwork->PutStatus("Connected!");
             IRCSOCKMODULECALL(OnIRCConnected(), NOTHING);
 
             m_pNetwork->ClearRawBuffer();
@@ -762,7 +797,7 @@ bool CIRCSock::OnNumericMessage(CNumericMessage& Message) {
             CChan* pChan = m_pNetwork->FindChan(Message.GetParam(1));
 
             if (pChan) {
-                pChan->SetModes(Message.GetParamsColon(2));
+                pChan->SetModes(Message.GetParam(2), Message.GetParamsSplit(3));
 
                 // We don't SetModeKnown(true) here,
                 // because a 329 will follow
@@ -1139,7 +1174,7 @@ void CIRCSock::PutIRC(const CMessage& Message) {
     // Only print if the line won't get sent immediately (same condition as in
     // TrySend()!)
     if (m_bFloodProtection && m_iSendsAllowed <= 0) {
-        DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/"
+        DEBUG("(" << m_pNetwork->GetUser()->GetUsername() << "/"
                   << m_pNetwork->GetName() << ") ZNC -> IRC ["
                   << CDebug::Filter(Message.ToString()) << "] (queued)");
     }
@@ -1151,7 +1186,7 @@ void CIRCSock::PutIRCQuick(const CString& sLine) {
     // Only print if the line won't get sent immediately (same condition as in
     // TrySend()!)
     if (m_bFloodProtection && m_iSendsAllowed <= 0) {
-        DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/"
+        DEBUG("(" << m_pNetwork->GetUser()->GetUsername() << "/"
                   << m_pNetwork->GetName() << ") ZNC -> IRC ["
                   << CDebug::Filter(sLine) << "] (queued to front)");
     }
@@ -1190,7 +1225,7 @@ void CIRCSock::PutIRCRaw(const CString& sLine) {
     bool bSkip = false;
     IRCSOCKMODULECALL(OnSendToIRC(sCopy), &bSkip);
     if (!bSkip) {
-        DEBUG("(" << m_pNetwork->GetUser()->GetUserName() << "/"
+        DEBUG("(" << m_pNetwork->GetUser()->GetUsername() << "/"
                   << m_pNetwork->GetName() << ") ZNC -> IRC ["
                   << CDebug::Filter(sCopy) << "]");
         Write(sCopy + "\r\n");
@@ -1215,7 +1250,7 @@ void CIRCSock::Connected() {
                       &bReturn);
     if (bReturn) return;
 
-    PutIRC("CAP LS");
+    PutIRC("CAP LS 302");
 
     if (!sPass.empty()) {
         PutIRC("PASS " + sPass);
@@ -1272,39 +1307,9 @@ void CIRCSock::SockError(int iErrno, const CString& sDescription) {
             m_pNetwork->PutStatus(
                 t_f("Disconnected from IRC ({1}). Reconnecting...")(sError));
         }
-#ifdef HAVE_LIBSSL
-        if (iErrno == errnoBadSSLCert) {
-            // Stringify bad cert
-            X509* pCert = GetX509();
-            if (pCert) {
-                BIO* mem = BIO_new(BIO_s_mem());
-                X509_print(mem, pCert);
-                X509_free(pCert);
-                char* pCertStr = nullptr;
-                long iLen = BIO_get_mem_data(mem, &pCertStr);
-                CString sCert(pCertStr, iLen);
-                BIO_free(mem);
-
-                VCString vsCert;
-                sCert.Split("\n", vsCert);
-                for (const CString& s : vsCert) {
-                    // It shouldn't contain any bad characters, but let's be
-                    // safe...
-                    m_pNetwork->PutStatus("|" + s.Escape_n(CString::EDEBUG));
-                }
-                CString sSHA1;
-                if (GetPeerFingerprint(sSHA1))
-                    m_pNetwork->PutStatus(
-                        "SHA1: " +
-                        sSHA1.Escape_n(CString::EHEXCOLON, CString::EHEXCOLON));
-                CString sSHA256 = GetSSLPeerFingerprint();
-                m_pNetwork->PutStatus("SHA-256: " + sSHA256);
-                m_pNetwork->PutStatus(
-                    t_f("If you trust this certificate, do /znc "
-                        "AddTrustedServerFingerprint {1}")(sSHA256));
-            }
-        }
-#endif
+    }
+    for (const CString& s : m_vsSSLError) {
+        m_pNetwork->PutStatus(s);
     }
     m_pNetwork->ClearRawBuffer();
     m_pNetwork->ClearMotdBuffer();
@@ -1312,6 +1317,34 @@ void CIRCSock::SockError(int iErrno, const CString& sDescription) {
     ResetChans();
     m_scUserModes.clear();
 }
+
+#ifdef HAVE_LIBSSL
+void CIRCSock::SSLCertError(X509* pCert) {
+    BIO* mem = BIO_new(BIO_s_mem());
+    X509_print(mem, pCert);
+    char* pCertStr = nullptr;
+    long iLen = BIO_get_mem_data(mem, &pCertStr);
+    CString sCert(pCertStr, iLen);
+    BIO_free(mem);
+
+    VCString vsCert;
+    sCert.Split("\n", vsCert);
+    for (const CString& s : vsCert) {
+        // It shouldn't contain any bad characters, but let's be
+        // safe...
+        m_vsSSLError.push_back("|" + s.Escape_n(CString::EDEBUG));
+    }
+    CString sSHA1;
+    if (GetPeerFingerprint(sSHA1))
+        m_vsSSLError.push_back(
+            "SHA1: " + sSHA1.Escape_n(CString::EHEXCOLON, CString::EHEXCOLON));
+    CString sSHA256 = GetSSLPeerFingerprint(pCert);
+    m_vsSSLError.push_back("SHA-256: " + sSHA256);
+    m_vsSSLError.push_back(
+        t_f("If you trust this certificate, do /znc "
+            "AddTrustedServerFingerprint {1}")(sSHA256));
+}
+#endif
 
 void CIRCSock::Timeout() {
     DEBUG(GetSockName() << " == Timeout()");
@@ -1400,6 +1433,16 @@ CString CIRCSock::GetISupport(const CString& sKey,
                               const CString& sDefault) const {
     MCString::const_iterator i = m_mISupport.find(sKey.AsUpper());
     if (i == m_mISupport.end()) {
+        return sDefault;
+    } else {
+        return i->second;
+    }
+}
+
+CString CIRCSock::GetCapLsValue(const CString& sKey,
+                                const CString& sDefault) const {
+    MCString::const_iterator i = m_msCapLsValues.find(sKey);
+    if (i == m_msCapLsValues.end()) {
         return sDefault;
     } else {
         return i->second;

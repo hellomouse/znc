@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,7 +25,7 @@ struct reply {
 // TODO this list is far from complete, no errors are handled
 static const struct {
     const char* szRequest;
-    struct reply vReplies[19];
+    struct reply vReplies[21];
 } vRouteReplies[] = {
       {"WHO",
        {{"402", true},   /* rfc1459 ERR_NOSUCHSERVER */
@@ -44,8 +44,8 @@ static const struct {
        {
         {"353", false}, /* rfc1459 RPL_NAMREPLY */
         {"366", true},  /* rfc1459 RPL_ENDOFNAMES */
-        // No such nick/channel
-        {"401", true},
+        {"401", true},  /* rfc1459 ERR_NOSUCHNICK */
+        {"403", true},  /* rfc1459 ERR_NOSUCHCHANNEL */
         {nullptr, true},
        }},
       {"LUSERS",
@@ -65,11 +65,13 @@ static const struct {
         {"313", false}, /* rfc1459 RPL_WHOISOPERATOR */
         {"317", false}, /* rfc1459 RPL_WHOISIDLE */
         {"319", false}, /* rfc1459 RPL_WHOISCHANNELS */
+        {"320", false}, /* unreal RPL_WHOISSPECIAL */
         {"301", false}, /* rfc1459 RPL_AWAY */
         {"276", false}, /* oftc-hybrid RPL_WHOISCERTFP */
         {"330", false}, /* ratbox RPL_WHOISLOGGEDIN
                            aka ircu RPL_WHOISACCOUNT */
-        {"338", false}, /* RPL_WHOISACTUALLY -- "actually using host" */
+        {"337", false}, /* solanum RPL_WHOISTEXT -- "is hiding their idle time" */
+        {"338", false}, /* ircu RPL_WHOISACTUALLY -- "actually using host" */
         {"378", false}, /* RPL_WHOISHOST -- real address of vhosts */
         {"671", false}, /* RPL_WHOISSECURE */
         {"307", false}, /* RPL_WHOISREGNICK */
@@ -97,6 +99,9 @@ static const struct {
        {{"406", false}, /* rfc1459 ERR_WASNOSUCHNICK */
         {"312", false}, /* rfc1459 RPL_WHOISSERVER */
         {"314", false}, /* rfc1459 RPL_WHOWASUSER */
+        {"330", false}, /* ratbox RPL_WHOISLOGGEDIN
+                           aka ircu RPL_WHOISACCOUNT */
+        {"338", false}, /* ircu RPL_WHOISACTUALLY -- "actually using host" */
         {"369", true},  /* rfc1459 RPL_ENDOFWHOWAS */
         {"431", true},  /* rfc1459 ERR_NONICKNAMEGIVEN */
         {nullptr, true}}},
@@ -179,6 +184,18 @@ static const struct {
         {"502", true}, /* rfc1459 ERR_USERSDONTMATCH */
         {nullptr, true},
        }},
+       {"TOPIC",
+        {
+         {"461", true}, /* rfc1459 ERR_NEEDMOREPARAMS */
+         {"403", true}, /* rfc1459 ERR_NOSUCHCHANNEL */
+         {"442", true}, /* rfc1459 ERR_NOTONCHANNEL */
+         {"482", true}, /* rfc1459 ERR_CHANOPRIVSNEEDED */
+         {"331", true}, /* rfc1459 RPL_NOTOPIC */
+         {"332", false}, /* rfc1459 RPL_TOPIC */
+         {"333", true}, /* ircu? RPL_TOPICWHOTIME */
+         {nullptr, true},
+       }},
+
       // END (last item!)
       {nullptr, {{nullptr, true}}}};
 
@@ -329,6 +346,12 @@ class CRouteRepliesMod : public CModule {
 
             // Ok, this looks like we should route it.
             // Fall through to the next loop
+        } else if (Message.GetType() == CMessage::Type::Topic) {
+            // Check if this is a topic request that needs to be handled
+
+            // If there are arguments to a topic we must not route it.
+            // Topic change message may result in TOPIC change to go to every client
+            if (!Message.GetParamsColon(1).empty()) return CONTINUE;
         }
 
         for (size_t i = 0; vRouteReplies[i].szRequest != nullptr; i++) {

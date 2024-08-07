@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  * Author: imaginos <imaginos@imaginos.net>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -351,7 +351,7 @@ class CAway : public CModule {
     void OnClientDisconnect() override { Away(); }
 
     CString GetPath() {
-        CString sBuffer = GetUser()->GetUserName();
+        CString sBuffer = GetUser()->GetUsername();
         CString sRet = GetSavePath();
         sRet += "/.znc-away-" + CBlowfish::MD5(sBuffer, true);
         return (sRet);

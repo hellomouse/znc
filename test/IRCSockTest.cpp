@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -211,7 +211,7 @@ TEST_F(IRCSockTest, OnErrorMessage) {
     EXPECT_THAT(
         m_pTestClient->vsLines,
         ElementsAre(
-            ":*status!znc@znc.in PRIVMSG me :Error from server: foo bar"));
+            ":*status!status@znc.in PRIVMSG me :Error from server: foo bar"));
 }
 
 TEST_F(IRCSockTest, OnInviteMessage) {
@@ -328,6 +328,24 @@ TEST_F(IRCSockTest, OnPartMessage) {
     EXPECT_THAT(m_pTestModule->vsMessages, ElementsAre(msg.ToString()));
     EXPECT_THAT(m_pTestModule->vNetworks, ElementsAre(m_pTestNetwork));
     EXPECT_THAT(m_pTestModule->vChannels, ElementsAre(m_pTestChan));
+}
+
+TEST_F(IRCSockTest, StatusModes) {
+    m_pTestSock->ReadLine(
+        ":server 005 user PREFIX=(Yohv)!@%+ :are supported by this server");
+
+    EXPECT_TRUE(m_pTestSock->IsPermMode('Y'));
+    EXPECT_TRUE(m_pTestSock->IsPermMode('o'));
+    EXPECT_TRUE(m_pTestSock->IsPermMode('h'));
+    EXPECT_TRUE(m_pTestSock->IsPermMode('v'));
+
+    m_pTestChan->SetModes("+sp");
+    m_pTestChan->ModeChange("+Y :nick");
+    EXPECT_EQ(m_pTestChan->GetModeString(), "+ps");
+
+    const CNick& pNick = m_pTestChan->GetNicks().at("nick");
+    EXPECT_TRUE(pNick.HasPerm('!'));
+    EXPECT_FALSE(pNick.HasPerm('@'));
 }
 
 TEST_F(IRCSockTest, OnPingMessage) {
@@ -529,4 +547,14 @@ TEST_F(IRCSockTest, StatusMsg) {
     m_pTestUser->SetTimestampPrepend(false);
     EXPECT_EQ(m_pTestChan->GetBuffer().GetLine(0, *m_pTestClient),
               ":someone PRIVMSG @#chan :hello ops");
+}
+
+TEST_F(IRCSockTest, ChanMode) {
+    // https://github.com/znc/znc/issues/1684
+    m_pTestSock->ReadLine(
+        ":irc.znc.in 001 me :Welcome to the Internet Relay Network me");
+    m_pTestSock->ReadLine(
+        ":irc.znc.in 005 me CHANMODES=be,f,lj,nti "
+        ":are supported by this server");
+	m_pTestSock->ReadLine(":irc.znc.in 324 me #chan +ntf ");
 }

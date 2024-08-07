@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,6 +68,7 @@ bool CConfig::Parse(CFile& file, CString& sErrorMsg) {
         std::stringstream stream;                              \
         stream << "Error on line " << uLineNum << ": " << arg; \
         sErrorMsg = stream.str();                              \
+        m_SubConfigNameSets.clear();                           \
         m_SubConfigs.clear();                                  \
         m_ConfigEntries.clear();                               \
         return false;                                          \
@@ -122,14 +123,16 @@ bool CConfig::Parse(CFile& file, CString& sErrorMsg) {
                 else
                     pActiveConfig = &ConfigStack.top().Config;
 
-                SubConfig& conf = pActiveConfig->m_SubConfigs[sTag.AsLower()];
-                SubConfig::const_iterator it = conf.find(sName);
+                const auto sTagLower = sTag.AsLower();
+                auto& nameset = pActiveConfig->m_SubConfigNameSets[sTagLower];
 
-                if (it != conf.end())
+                if (nameset.find(sName) != nameset.end())
                     ERROR("Duplicate entry for tag \"" << sTag << "\" name \""
                                                        << sName << "\".");
 
-                conf[sName] = CConfigEntry(myConfig);
+                nameset.insert(sName);
+                pActiveConfig->m_SubConfigs[sTagLower].emplace_back(sName,
+                                                                    myConfig);
             } else {
                 if (sValue.empty())
                     ERROR("Empty block name at begin of block.");

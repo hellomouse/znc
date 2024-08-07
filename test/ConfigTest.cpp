@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -87,8 +87,7 @@ class CConfigSuccessTest : public CConfigTest {
 
         CConfig::SubConfigMapIterator it2 = conf.BeginSubConfigs();
         while (it2 != conf.EndSubConfigs()) {
-            std::map<CString, CConfigEntry>::const_iterator it3 =
-                it2->second.begin();
+            auto it3 = it2->second.begin();
 
             while (it3 != it2->second.end()) {
                 sRes += "->" + it2->first + "/" + it3->first + "\n";
@@ -145,6 +144,11 @@ TEST_F(CConfigSuccessTest, SubConf7) {
 TEST_F(CConfigSuccessTest, SubConf8) {
     TEST_SUCCESS(" \t <A B>\nfoo = bar\n\tFooO = bar\n</a>",
                  "->a/B\nfoo=bar\nfooo=bar\n<-\n");
+}
+// ensure order is preserved i.e. subconfigs should not be sorted by name
+TEST_F(CConfigSuccessTest, SubConf9) {
+    TEST_SUCCESS("<foo b>\n</foo>\n<foo a>\n</foo>",
+                 "->foo/b\n<-\n->foo/a\n<-\n");
 }
 
 /* comments */

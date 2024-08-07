@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,6 +82,22 @@ TEST_F(ClientTest, AccountNotify) {
     EXPECT_THAT(m_pTestClient->vsLines, ElementsAre(msg.ToString()));
 }
 
+TEST_F(ClientTest, AccountTag) {
+    m_pTestSock->ReadLine(":server CAP * ACK :account-tag");
+    m_pTestClient->Reset();
+
+    CMessage msg(":nick!user@host PRIVMSG #channel :text");
+    CMessage extmsg("@account=account-name :nick!user@host PRIVMSG #channel :text");
+    EXPECT_FALSE(m_pTestClient->IsTagEnabled("account"));
+    m_pTestClient->PutClient(extmsg);
+    EXPECT_THAT(m_pTestClient->vsLines, ElementsAre(msg.ToString()));
+    m_pTestClient->SetTagSupport("account", true);
+    EXPECT_TRUE(m_pTestClient->IsTagEnabled("account"));
+    m_pTestClient->PutClient(extmsg);
+    EXPECT_THAT(m_pTestClient->vsLines,
+                ElementsAre(msg.ToString(), extmsg.ToString()));
+}
+
 TEST_F(ClientTest, AwayNotify) {
     CMessage msg(":nick!user@host AWAY :message");
     EXPECT_FALSE(m_pTestClient->HasAwayNotify());
@@ -150,22 +166,6 @@ TEST_F(ClientTest, UserhostInNames) {  // aka UHNAMES
     EXPECT_THAT(m_pTestClient->vsLines, ElementsAre(msg.ToString()));
     m_pTestClient->SetUHNames(true);
     EXPECT_TRUE(m_pTestClient->HasUHNames());
-    m_pTestClient->PutClient(extmsg);
-    EXPECT_THAT(m_pTestClient->vsLines,
-                ElementsAre(msg.ToString(), extmsg.ToString()));
-}
-
-TEST_F(ClientTest, ExtendedJoin) {
-    m_pTestSock->ReadLine(":server CAP * ACK :extended-join");
-    m_pTestClient->Reset();
-
-    CMessage msg(":nick!user@host JOIN #channel");
-    CMessage extmsg(":nick!user@host JOIN #channel account :Real Name");
-    EXPECT_FALSE(m_pTestClient->HasExtendedJoin());
-    m_pTestClient->PutClient(extmsg);
-    EXPECT_THAT(m_pTestClient->vsLines, ElementsAre(msg.ToString()));
-    m_pTestClient->SetExtendedJoin(true);
-    EXPECT_TRUE(m_pTestClient->HasExtendedJoin());
     m_pTestClient->PutClient(extmsg);
     EXPECT_THAT(m_pTestClient->vsLines,
                 ElementsAre(msg.ToString(), extmsg.ToString()));

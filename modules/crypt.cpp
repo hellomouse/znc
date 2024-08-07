@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,8 @@ class CCryptMod : public CModule {
     CString m_sPrivKey;
     CString m_sPubKey;
 
-#if OPENSSL_VERSION_NUMBER < 0X10100000L || defined(LIBRESSL_VERSION_NUMBER)
+#if OPENSSL_VERSION_NUMBER < 0X10100000L || \
+    (defined(LIBRESSL_VERSION_NUMBER) && LIBRESSL_VERSION_NUMBER < 0x02070000fL)
     static int DH_set0_pqg(DH* dh, BIGNUM* p, BIGNUM* q, BIGNUM* g) {
         /* If the fields p and g in dh are nullptr, the corresponding input
          * parameters MUST be non-nullptr.  q may remain nullptr.
@@ -473,6 +474,7 @@ class CCryptMod : public CModule {
         CTable Table;
         Table.AddColumn(t_s("Target", "listkeys"));
         Table.AddColumn(t_s("Key", "listkeys"));
+        Table.SetStyle(CTable::ListStyle);
 
         for (MCString::iterator it = BeginNV(); it != EndNV(); ++it) {
             if (!it->first.Equals(NICK_PREFIX_KEY)) {

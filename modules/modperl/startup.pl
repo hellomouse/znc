@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+# Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -405,6 +405,9 @@ sub OnPrivNotice {}
 sub OnChanNotice {}
 sub OnTopic {}
 sub OnServerCapAvailable {}
+sub OnServerCap302Available { my ($self, $cap, $value) = @_; $self->OnServerCapAvailable($cap) }
+sub OnClientAttached {}
+sub OnClientDetached {}
 sub OnServerCapResult {}
 sub OnTimerAutoJoin {}
 sub OnEmbeddedWebRequest {}
@@ -641,7 +644,7 @@ sub CreateTimer {
 			$self->{_cmod},
 			$a{interval}//10,
 			$a{cycles}//1,
-			"perl-timer",
+			$a{label}//"perl-timer",
 			$a{description}//'Just Another Perl Timer',
 			$ptimer);
 	$ptimer->{_ctimer} = $ctimer;

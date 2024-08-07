@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,19 +16,6 @@
 
 #ifndef ZNC_MESSAGE_H
 #define ZNC_MESSAGE_H
-
-// Remove this after Feb 2016 when Debian 7 is EOL
-#if __cpp_ref_qualifiers >= 200710
-#define ZNC_LVREFQUAL &
-#elif defined(__clang__)
-#define ZNC_LVREFQUAL &
-#elif __GNUC__ > 4 ||                       \
-    __GNUC__ == 4 && (__GNUC_MINOR__ > 8 || \
-                      __GNUC_MINOR__ == 8 && __GNUC_PATCHLEVEL__ >= 1)
-#define ZNC_LVREFQUAL &
-#else
-#define ZNC_LVREFQUAL
-#endif
 
 #ifdef SWIG
 #define ZNC_MSG_DEPRECATED(msg)
@@ -121,6 +108,18 @@ class CMessage {
     void SetCommand(const CString& sCommand);
 
     const VCString& GetParams() const { return m_vsParams; }
+
+    /**
+     * Get a subset of the message parameters
+     *
+     * This allows accessing a vector of a specific range of parameters,
+     * allowing easy inline use, such as `pChan->SetModes(Message.GetParam(2), Message.GetParamsSplit(3));`
+     *
+     * @param uIdx The index of the first parameter to retrieve
+     * @param uLen How many parameters to retrieve
+     * @return A VCString containing the retrieved parameters
+     */
+    VCString GetParamsSplit(unsigned int uIdx, unsigned int uLen = -1) const;
     void SetParams(const VCString& vsParams);
 
     /// @deprecated use GetParamsColon() instead.
@@ -149,12 +148,12 @@ class CMessage {
     };
 
     CString ToString(unsigned int uFlags = IncludeAll) const;
-    void Parse(CString sMessage);
+    void Parse(const CString& sMessage);
 
 // Implicit and explicit conversion to a subclass reference.
 #ifndef SWIG
     template <typename M>
-    M& As() ZNC_LVREFQUAL {
+    M& As() & {
         static_assert(std::is_base_of<CMessage, M>{},
                       "Must be subclass of CMessage");
         static_assert(sizeof(M) == sizeof(CMessage),
@@ -163,7 +162,7 @@ class CMessage {
     }
 
     template <typename M>
-    const M& As() const ZNC_LVREFQUAL {
+    const M& As() const& {
         static_assert(std::is_base_of<CMessage, M>{},
                       "Must be subclass of CMessage");
         static_assert(sizeof(M) == sizeof(CMessage),
@@ -173,12 +172,12 @@ class CMessage {
 
     template <typename M, typename = typename std::enable_if<
                               std::is_base_of<CMessage, M>{}>::type>
-    operator M&() ZNC_LVREFQUAL {
+    operator M&() & {
         return As<M>();
     }
     template <typename M, typename = typename std::enable_if<
                               std::is_base_of<CMessage, M>{}>::type>
-    operator const M&() const ZNC_LVREFQUAL {
+    operator const M&() const& {
         return As<M>();
     }
 // REGISTER_ZNC_MESSAGE allows SWIG to instantiate correct .As<> calls.
@@ -257,7 +256,14 @@ REGISTER_ZNC_MESSAGE(CJoinMessage);
 
 class CModeMessage : public CTargetMessage {
   public:
+    /// @deprecated Use GetModeList() and GetModeParams()
     CString GetModes() const { return GetParamsColon(1).TrimPrefix_n(":"); }
+
+    CString GetModeList() const { return GetParam(1); };
+
+    VCString GetModeParams() const { return GetParamsSplit(2); };
+
+    bool HasModes() const { return !GetModeList().empty(); };
 };
 REGISTER_ZNC_MESSAGE(CModeMessage);
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2016 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,13 @@
  * limitations under the License.
  */
 
-#include "znctest.h"
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+#include "znctest.h"
 
 using testing::HasSubstr;
+using testing::Not;
 
 namespace znc_inttest {
 namespace {
@@ -52,6 +55,50 @@ TEST_F(ZNCTest, NotifyConnectModule) {
         "NOTICE nick :*** user@identifier detached from 127.0.0.1");
 }
 
+TEST_F(ZNCTest, ClientNotifyModule) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod clientnotify");
+    client.ReadUntil("Loaded module");
+
+    auto check_not_sent = [](Socket& client, std::string wrongAnswer){
+        auto result = QString{client.ReadRemainder()}.toStdString();
+        EXPECT_THAT(result, Not(HasSubstr((wrongAnswer)))) << "Got an answer from the ClientNotifyModule even though we didnt want one with the given configuration";
+    };
+
+    auto client2 = LoginClient();
+    client.ReadUntil(":Another client (127.0.0.1) authenticated as your user. Use the 'ListClients' command to see all 2 clients.");
+    auto client3 = LoginClient();
+    client.ReadUntil(":Another client (127.0.0.1) authenticated as your user. Use the 'ListClients' command to see all 3 clients.");
+
+    // disable notifications for every message
+    client.Write("PRIVMSG *clientnotify :NewOnly on");
+
+    // check that we do not ge a notification after connecting from a know ip
+    auto client4 = LoginClient();
+    check_not_sent(client, ":Another client (127.0.0.1) authenticated as your user. Use the 'ListClients' command to see all 4 clients.");
+
+    // choose to notify only on new client ids
+    client.Write("PRIVMSG *clientnotify :NotifyOnNewID on");
+
+    auto client5 = LoginClient("identifier123");
+    client.ReadUntil(":Another client (127.0.0.1 / identifier123) authenticated as your user. Use the 'ListClients' command to see all 5 clients.");
+    auto client6 = LoginClient("identifier123");
+    check_not_sent(client, ":Another client (127.0.0.1 / identifier123) authenticated as your user. Use the 'ListClients' command to see all 6 clients.");
+
+    auto client7 = LoginClient("not_identifier123");
+    client.ReadUntil(":Another client (127.0.0.1 / not_identifier123) authenticated as your user. Use the 'ListClients' command to see all 7 clients.");
+
+    // choose to notify from both clientids and new IPs
+    client.Write("PRIVMSG *clientnotify :NotifyOnNewIP on");
+
+    auto client8 = LoginClient();
+    check_not_sent(client, ":Another client (127.0.0.1 / identifier123) authenticated as your user. Use the 'ListClients' command to see all 8 clients.");
+    auto client9 = LoginClient("definitely_not_identifier123");
+    client.ReadUntil(":Another client (127.0.0.1 / definitely_not_identifier123) authenticated as your user. Use the 'ListClients' command to see all 9 clients.");
+}
+
 TEST_F(ZNCTest, ShellModule) {
     auto znc = Run();
     auto ircd = ConnectIRCd();
@@ -76,6 +123,11 @@ TEST_F(ZNCTest, WatchModule) {
     ircd.Write(":n!i@h PRIVMSG #znc :\001ACTION foo\001");
     client.ReadUntil(
         ":$*!watch@znc.in PRIVMSG nick :* CTCP: n [ACTION foo] to [#znc]");
+    client.Write("PRIVMSG *watch :add * *spaces *word1 word2*");
+    client.ReadUntil("Adding entry:");
+    ircd.Write(":n!i@h PRIVMSG #znc :SOMETHING word1 word2 SOMETHING");
+    client.ReadUntil(
+        ":*spaces!watch@znc.in PRIVMSG nick :<n:#znc> SOMETHING word1 word2 SOMETHING");
 }
 
 TEST_F(ZNCTest, ModuleCrypt) {
@@ -119,11 +171,11 @@ TEST_F(ZNCTest, ModuleCrypt) {
 
     client1.Write("PRIVMSG *crypt :listkeys");
     QByteArray key1("");
-    client1.ReadUntilAndGet("| nick2  | ", key1);
+    client1.ReadUntilAndGet("\002nick2\017: ", key1);
     client2.Write("PRIVMSG *crypt :listkeys");
     QByteArray key2("");
-    client2.ReadUntilAndGet("| user   | ", key2);
-    ASSERT_EQ(key1.mid(11), key2.mid(11));
+    client2.ReadUntilAndGet("\002user\017: ", key2);
+    ASSERT_EQ(key1.mid(9), key2.mid(8));
     client1.Write("CAP REQ :echo-message");
     client1.Write("PRIVMSG .nick2 :Hello");
     QByteArray secretmsg;
@@ -138,8 +190,8 @@ TEST_F(ZNCTest, AutoAttachModule) {
     auto ircd = ConnectIRCd();
     auto client = LoginClient();
     InstallModule("testmod.cpp", R"(
-        #include <znc/Modules.h>
         #include <znc/Client.h>
+        #include <znc/Modules.h>
         class TestModule : public CModule {
           public:
             MODCONSTRUCTOR(TestModule) {}
@@ -182,7 +234,7 @@ TEST_F(ZNCTest, KeepNickModule) {
     ircd.ReadUntil("NICK user");
     ircd.Write(":server 435 user_ user #error :Nope :-P");
     client.ReadUntil(
-        ":*keepnick!znc@znc.in PRIVMSG user_ "
+        ":*keepnick!keepnick@znc.in PRIVMSG user_ "
         ":Unable to obtain nick user: Nope :-P, #error");
 }
 
@@ -192,11 +244,90 @@ TEST_F(ZNCTest, ModuleCSRFOverride) {
     auto client = LoginClient();
     client.Write("znc loadmod samplewebapi");
     client.ReadUntil("Loaded module");
-    auto request = QNetworkRequest(QUrl("http://127.0.0.1:12345/mods/global/samplewebapi/"));
-    auto reply = HttpPost(request, {
-        {"text", "ipsum"}
-    })->readAll().toStdString();
+    auto request = QNetworkRequest(
+        QUrl("http://127.0.0.1:12345/mods/global/samplewebapi/"));
+    auto reply =
+        HttpPost(request, {{"text", "ipsum"}})->readAll().toStdString();
     EXPECT_THAT(reply, HasSubstr("ipsum"));
+}
+
+class SaslModuleTest : public ZNCTest,
+                       public testing::WithParamInterface<
+                           std::pair<int, std::vector<std::string>>> {
+  public:
+    static std::string Prefix() {
+        std::string s;
+        for (int i = 0; i < 33; ++i) s += "YWFh";
+        s += "YQBh";
+        for (int i = 0; i < 33; ++i) s += "YWFh";
+        s += "AGJi";
+        for (int i = 0; i < 31; ++i) s += "YmJi";
+        EXPECT_EQ(s.length(), 396);
+        return s;
+    }
+
+  protected:
+    int PassLen() { return std::get<0>(GetParam()); }
+    void ExpectPlainAuth(Socket& ircd) {
+        for (const auto& str : std::get<1>(GetParam())) {
+            QByteArray line;
+            ircd.ReadUntilAndGet("AUTHENTICATE ", line);
+            ASSERT_EQ(line.toStdString(), "AUTHENTICATE " + str);
+        }
+        ASSERT_EQ(ircd.ReadRemainder().indexOf("AUTHENTICATE"), -1);
+    }
+};
+
+TEST_P(SaslModuleTest, Test) {
+    QFile conf(m_dir.path() + "/configs/znc.conf");
+    ASSERT_TRUE(conf.open(QIODevice::Append | QIODevice::Text));
+    QTextStream(&conf) << "ServerThrottle = 1\n";
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod sasl");
+    QByteArray sUser(100, 'a');
+    QByteArray sPass(PassLen(), 'b');
+    client.Write("PRIVMSG *sasl :set " + sUser + " " + sPass);
+    client.Write("znc jump");
+    ircd = ConnectIRCd();
+    ircd.ReadUntil("CAP LS");
+    ircd.Write("CAP * LS :sasl");
+    ircd.ReadUntil("CAP REQ :sasl");
+    ircd.Write("CAP * ACK :sasl");
+    ircd.ReadUntil("AUTHENTICATE EXTERNAL");
+    ircd.Write(":server 904 *");
+    ircd.ReadUntil("AUTHENTICATE PLAIN");
+    ircd.Write("AUTHENTICATE +");
+    ExpectPlainAuth(ircd);
+    ircd.Write(":server 903 user :Logged in");
+    ircd.ReadUntil("CAP END");
+}
+
+INSTANTIATE_TEST_CASE_P(SaslInst, SaslModuleTest,
+                        testing::Values(
+                            std::pair<int, std::vector<std::string>>{
+                                95, {SaslModuleTest::Prefix()}},
+                            std::pair<int, std::vector<std::string>>{
+                                96, {SaslModuleTest::Prefix() + "Yg==", "+"}},
+                            std::pair<int, std::vector<std::string>>{
+                                97, {SaslModuleTest::Prefix() + "YmI=", "+"}},
+                            std::pair<int, std::vector<std::string>>{
+                                98, {SaslModuleTest::Prefix() + "YmJi", "+"}},
+                            std::pair<int, std::vector<std::string>>{
+                                99,
+                                {SaslModuleTest::Prefix() + "YmJi", "Yg=="}}));
+
+TEST_F(ZNCTest, SaslMechsNotInit) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod sasl");
+    client.Write("PRIVMSG *sasl :set * *");
+    client.ReadUntil("Password has been set");
+    ircd.Write("AUTHENTICATE +");
+    ircd.Write("PING foo");
+    ircd.ReadUntil("PONG foo");
 }
 
 }  // namespace

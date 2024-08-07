@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+# Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -37,11 +37,7 @@ function(add_cxx_module mod modpath)
 	if(moddepend_${mod})
 		add_dependencies("module_${mod}" ${moddepend_${mod}})
 	endif()
-	# ${znclib_LIB_DEPENDS} is to overcome OSX's need for -undefined suppress
-	# when accessing symbols exported by dependencies of znclib (e.g.
-	# openssl), but not used in znclib itself
-	target_link_libraries("module_${mod}" PRIVATE ZNC ${modlink_${mod}}
-		${znclib_LIB_DEPENDS})
+	target_link_libraries("module_${mod}" PRIVATE ZNC ${modlink_${mod}})
 	set_target_properties("module_${mod}" PROPERTIES "" "" ${modprop_${mod}})
 	install(TARGETS "module_${mod}"
 		LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}/znc")
@@ -54,8 +50,7 @@ function(add_python_module mod modpath)
 endfunction()
 
 if(CYRUS_FOUND)
-	set(modcompile_cyrusauth PRIVATE ${CYRUS_CFLAGS})
-	set(modlink_cyrusauth ${CYRUS_LDFLAGS})
+	set(modlink_cyrusauth PkgConfig::CYRUS)
 else()
 	set(moddisable_cyrusauth true)
 endif()
@@ -66,7 +61,7 @@ else()
 	set(moddisable_modperl true)
 endif()
 
-if(PYTHON_FOUND)
+if(Python3_FOUND)
 	add_subdirectory(modpython)
 else()
 	set(moddisable_modpython true)
@@ -90,8 +85,6 @@ foreach(modpath ${all_modules})
 		continue()
 	endif()
 
-	list(APPEND actual_modules "${modpath}")
-
 	set(modenabled true)
 
 	if(moddisable_${mod})
@@ -109,14 +102,16 @@ foreach(modpath ${all_modules})
 	if(modenabled)
 		if(modtype STREQUAL "cpp")
 			add_cxx_module("${mod}" "${modpath}")
-		endif()
-		if(modtype STREQUAL "pm")
+		elseif(modtype STREQUAL "pm")
 			add_perl_module("${mod}" "${modpath}")
-		endif()
-		if(modtype STREQUAL "py")
+		elseif(modtype STREQUAL "py")
 			add_python_module("${mod}" "${modpath}")
+		else()
+			continue()
 		endif()
 	endif()
+
+	list(APPEND actual_modules "${modpath}")
 endforeach()
 
 if(HAVE_I18N)

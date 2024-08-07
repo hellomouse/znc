@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2016 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,7 @@ void WriteConfig(QString path) {
     p.ReadUntil("Real name");               p.Write();
     p.ReadUntil("Bind host");               p.Write();
     p.ReadUntil("Set up a network?");       p.Write();
-    p.ReadUntil("Name [freenode]");         p.Write("test");
+    p.ReadUntil("Name [libera]");           p.Write("test");
     p.ReadUntil("Server host (host only)"); p.Write("127.0.0.1");
     p.ReadUntil("Server uses SSL?");        p.Write();
     p.ReadUntil("6667");                    p.Write();
@@ -48,6 +48,14 @@ void WriteConfig(QString path) {
     p.ReadUntil("Launch ZNC now?");         p.Write("no");
     p.ShouldFinishItself();
     // clang-format on
+
+    // Default 30s is too slow for the test
+    QFile conf(path + "/configs/znc.conf");
+    ASSERT_TRUE(conf.open(QIODevice::Append | QIODevice::Text));
+    QTextStream out(&conf);
+    out << R"(
+        ServerThrottle = 5
+    )";
 }
 
 void ZNCTest::SetUp() {
@@ -57,9 +65,7 @@ void ZNCTest::SetUp() {
 }
 
 Socket ZNCTest::ConnectIRCd() {
-    [this] {
-        ASSERT_TRUE(m_server.waitForNewConnection(30000 /* msec */));
-    }();
+    [this] { ASSERT_TRUE(m_server.waitForNewConnection(30000 /* msec */)); }();
     return WrapIO(m_server.nextPendingConnection());
 }
 
@@ -74,18 +80,23 @@ Socket ZNCTest::ConnectClient() {
     return WrapIO(&sock);
 }
 
-Socket ZNCTest::LoginClient() {
+Socket ZNCTest::LoginClient(QString identifier) {
     auto client = ConnectClient();
     client.Write("PASS :hunter2");
     client.Write("NICK nick");
-    client.Write("USER user/test x x :x");
+    if ( identifier.length() == 0 ) {
+        client.Write("USER user/test x x :x");
+    } else {
+        client.Write("USER user@" + identifier.toUtf8() + "/test x x :x");
+    }
     return client;
 }
 
 std::unique_ptr<Process> ZNCTest::Run() {
     return std::unique_ptr<Process>(new Process(
-        ZNC_BIN_DIR "/znc", QStringList() << "--debug"
-                                          << "--datadir" << m_dir.path(),
+        ZNC_BIN_DIR "/znc",
+        QStringList() << "--debug"
+                      << "--datadir" << m_dir.path(),
         [](QProcess* proc) {
             proc->setProcessChannelMode(QProcess::ForwardedChannels);
         }));
@@ -137,13 +148,13 @@ void ZNCTest::InstallModule(QString name, QString content) {
         QTextStream out(&file);
         out << content;
         file.close();
-        Process p(
-            ZNC_BIN_DIR "/znc-buildmod", QStringList() << file.fileName(),
-            [&](QProcess* proc) {
-                proc->setWorkingDirectory(dir.absolutePath());
-                proc->setProcessChannelMode(QProcess::ForwardedChannels);
-            });
+        Process p(ZNC_BIN_DIR "/znc-buildmod", QStringList() << file.fileName(),
+                  [&](QProcess* proc) {
+                      proc->setWorkingDirectory(dir.absolutePath());
+                      proc->setProcessChannelMode(QProcess::ForwardedChannels);
+                  });
         p.ShouldFinishItself();
+        p.ShouldFinishInSec(300);
     } else if (name.endsWith(".py")) {
         // Dedent
         QStringList lines = content.split("\n");
@@ -151,8 +162,7 @@ void ZNCTest::InstallModule(QString name, QString content) {
         for (const QString& line : lines) {
             int nonspace = line.indexOf(QRegExp("\\S"));
             if (nonspace == -1) continue;
-            if (nonspace < maxoffset || maxoffset == -1)
-                maxoffset = nonspace;
+            if (nonspace < maxoffset || maxoffset == -1) maxoffset = nonspace;
         }
         if (maxoffset == -1) maxoffset = 0;
         QFile file(dir.filePath(name));
@@ -171,6 +181,31 @@ void ZNCTest::InstallModule(QString name, QString content) {
         QTextStream out(&file);
         out << content;
     }
+}
+
+void ZNCTest::InstallTranslation(QString module, QString language, QString content) {
+    QDir dir(m_dir.path());
+    for (QString d : std::vector<QString>{"modules", "locale", language, "LC_MESSAGES"}) {
+        ASSERT_TRUE(dir.mkpath(d)) << d.toStdString();
+        ASSERT_TRUE(dir.cd(d)) << d.toStdString();
+    }
+    QTemporaryDir srcdir;
+    QFile file(QDir(srcdir.path()).filePath("foo.po"));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream out(&file);
+    out << content;
+    file.close();
+    {
+        Process p("msgfmt", QStringList() << "-D" << "." << "-o" << "foo.mo" << "foo.po",
+            [&](QProcess* proc) {
+                proc->setWorkingDirectory(srcdir.path());
+                proc->setProcessChannelMode(QProcess::ForwardedChannels);
+            });
+        p.ShouldFinishItself();
+        p.ShouldFinishInSec(300);
+    }
+    QFile result(QDir(srcdir.path()).filePath("foo.mo"));
+    result.rename(dir.filePath("znc-" + module + ".mo"));
 }
 
 

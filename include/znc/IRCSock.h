@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2018 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,6 +56,9 @@ class CIRCSock : public CIRCSocket {
     void SockError(int iErrno, const CString& sDescription) override;
     void Timeout() override;
     void ReachedMaxBuffer() override;
+#ifdef HAVE_LIBSSL
+    void SSLCertError(X509* pCert) override;
+#endif
     /** Sends a raw data line to the server.
      *  @param sLine The line to be sent.
      *
@@ -158,6 +161,8 @@ class CIRCSock : public CIRCSocket {
     bool IsCapAccepted(const CString& sCap) {
         return 1 == m_ssAcceptedCaps.count(sCap);
     }
+    CString GetCapLsValue(const CString& sKey,
+                          const CString& sDefault = "") const;
     const MCString& GetISupport() const { return m_mISupport; }
     CString GetISupport(const CString& sKey,
                         const CString& sDefault = "") const;
@@ -188,7 +193,7 @@ class CIRCSock : public CIRCSocket {
     bool OnTextMessage(CTextMessage& Message);
     bool OnTopicMessage(CTopicMessage& Message);
     bool OnWallopsMessage(CMessage& Message);
-    bool OnServerCapAvailable(const CString& sCap);
+    bool OnServerCapAvailable(const CString& sCap, const CString& sValue);
     // !Message Handlers
 
     void SetNick(const CString& sNick);
@@ -218,6 +223,7 @@ class CIRCSock : public CIRCSocket {
     unsigned int m_uCapPaused;
     SCString m_ssAcceptedCaps;
     SCString m_ssPendingCaps;
+    MCString m_msCapLsValues;
     time_t m_lastCTCP;
     unsigned int m_uNumCTCP;
     static const time_t m_uCTCPFloodTime;
@@ -229,8 +235,10 @@ class CIRCSock : public CIRCSocket {
     double m_fFloodRate;
     bool m_bFloodProtection;
     SCString m_ssSupportedTags;
+    VCString m_vsSSLError;
 
     friend class CIRCFloodTimer;
+    friend class CCoreCaps;
 };
 
 #endif  // !ZNC_IRCSOCK_H

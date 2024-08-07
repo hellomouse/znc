@@ -3,12 +3,12 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
-"X-Generator: crowdin.com\n"
 "X-Crowdin-Project: znc-bouncer\n"
+"X-Crowdin-Project-ID: 289533\n"
 "X-Crowdin-Language: nl\n"
 "X-Crowdin-File: /master/modules/po/autocycle.pot\n"
+"X-Crowdin-File-ID: 207\n"
 "Project-Id-Version: znc-bouncer\n"
-"Last-Translator: DarthGandalf <alexey+crowdin@asokolov.org>\n"
 "Language-Team: Dutch\n"
 "Language: nl_NL\n"
 
@@ -54,19 +54,19 @@ msgstr "{1} verwijderd van lijst"
 msgid "Usage: Del [!]<#chan>"
 msgstr "Gebruik: Del [!]<#kanaal>"
 
-#: autocycle.cpp:85 autocycle.cpp:89 autocycle.cpp:94
+#: autocycle.cpp:85 autocycle.cpp:90 autocycle.cpp:95
 msgid "Channel"
 msgstr "Kanaal"
 
-#: autocycle.cpp:100
+#: autocycle.cpp:101
 msgid "You have no entries."
 msgstr "Je hebt geen kanalen toegvoegd."
 
-#: autocycle.cpp:229
+#: autocycle.cpp:230
 msgid "List of channel masks and channel masks with ! before them."
 msgstr "Lijst van kanaal maskers en kanaal maskers met ! er voor."
 
-#: autocycle.cpp:234
+#: autocycle.cpp:235
 msgid "Rejoins channels to gain Op if you're the only user left"
 msgstr ""
 "Verbind opnieuw met een kanaal om beheer te krijgen als je de enige "

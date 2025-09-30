@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -881,6 +881,18 @@ CModule::EModRet CModule::OnUserNoticeMessage(CNoticeMessage& Message) {
     Message.SetText(sText);
     return ret;
 }
+CModule::EModRet CModule::OnUserTagMessage(CTargetMessage& Message) {
+    return CONTINUE;
+}
+CModule::EModRet CModule::OnPrivTagMessage(CTargetMessage& Message) {
+    return CONTINUE;
+}
+CModule::EModRet CModule::OnChanTagMessage(CTargetMessage& Message) {
+    return CONTINUE;
+}
+CModule::EModRet CModule::OnInviteMessage(CInviteMessage& Message) {
+    return CONTINUE;
+}
 CModule::EModRet CModule::OnUserJoin(CString& sChannel, CString& sKey) {
     return CONTINUE;
 }
@@ -1192,6 +1204,7 @@ bool CModule::InternalServerDependentCapsIsClientCapSupported(
 }
 void CModule::OnClientCapRequest(CClient* pClient, const CString& sCap,
                                  bool bState) {}
+
 void CModule::InternalServerDependentCapsOnClientCapRequest(CClient* pClient,
                                                             const CString& sCap,
                                                             bool bState) {
@@ -1200,6 +1213,21 @@ void CModule::InternalServerDependentCapsOnClientCapRequest(CClient* pClient,
     if (it == m_mServerDependentCaps.end()) return;
     it->second->OnClientChangedSupport(pClient, bState);
 }
+
+CModule::EModRet CModule::OnClientSASLAuthenticate(
+    const CString& sMechanism, const CString& sBuffer) {
+    return CONTINUE;
+}
+
+CModule::EModRet CModule::OnClientSASLServerInitialChallenge(
+    const CString& sMechanism, CString& sResponse) {
+    return CONTINUE;
+}
+
+void CModule::OnClientGetSASLMechanisms(SCString& ssMechanisms) {}
+
+void CModule::OnClientSASLAborted() {}
+
 CModule::EModRet CModule::OnModuleLoading(const CString& sModName,
                                           const CString& sArgs,
                                           CModInfo::EModuleType eType,
@@ -1413,6 +1441,18 @@ bool CModules::OnUserNotice(CString& sTarget, CString& sMessage) {
 }
 bool CModules::OnUserNoticeMessage(CNoticeMessage& Message) {
     MODHALTCHK(OnUserNoticeMessage(Message));
+}
+bool CModules::OnUserTagMessage(CTargetMessage& Message) {
+    MODHALTCHK(OnUserTagMessage(Message));
+}
+bool CModules::OnPrivTagMessage(CTargetMessage& Message) {
+    MODHALTCHK(OnPrivTagMessage(Message));
+}
+bool CModules::OnChanTagMessage(CTargetMessage& Message) {
+    MODHALTCHK(OnChanTagMessage(Message));
+}
+bool CModules::OnInviteMessage(CInviteMessage& Message) {
+    MODHALTCHK(OnInviteMessage(Message));
 }
 bool CModules::OnUserJoin(CString& sChannel, CString& sKey) {
     MODHALTCHK(OnUserJoin(sChannel, sKey));
@@ -1745,6 +1785,26 @@ bool CModules::OnClientCapRequest(CClient* pClient, const CString& sCap,
     return false;
 }
 
+bool CModules::OnClientSASLAuthenticate(const CString& sMechanism,
+                                        const CString& sBuffer) {
+    MODHALTCHK(OnClientSASLAuthenticate(sMechanism, sBuffer));
+}
+
+bool CModules::OnClientSASLServerInitialChallenge(const CString& sMechanism,
+                                     CString& sResponse) {
+    MODHALTCHK(OnClientSASLServerInitialChallenge(sMechanism, sResponse));
+}
+
+bool CModules::OnClientGetSASLMechanisms(SCString& ssMechanisms) {
+    MODUNLOADCHK(OnClientGetSASLMechanisms(ssMechanisms));
+    return false;
+}
+
+bool CModules::OnClientSASLAborted() {
+    MODUNLOADCHK(OnClientSASLAborted());
+    return false;
+}
+
 bool CModules::OnModuleLoading(const CString& sModName, const CString& sArgs,
                                CModInfo::EModuleType eType, bool& bSuccess,
                                CString& sRetMsg) {
@@ -2030,6 +2090,7 @@ void CModules::GetDefaultMods(set<CModInfo>& ssMods,
         {"chansaver", CModInfo::UserModule},
         {"controlpanel", CModInfo::UserModule},
         {"corecaps", CModInfo::GlobalModule},
+        {"saslplainauth", CModInfo::GlobalModule},
         {"simple_away", CModInfo::NetworkModule},
         {"webadmin", CModInfo::GlobalModule}};
 

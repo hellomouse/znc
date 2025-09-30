@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -131,6 +131,7 @@ class CIRCSock : public CIRCSocket {
     unsigned int GetMaxNickLen() const { return m_uMaxNickLen; }
     EChanModeArgs GetModeType(char cMode) const;
     char GetPermFromMode(char cMode) const;
+    char GetModeFromPerm(char cPerm) const;
     const std::map<char, EChanModeArgs>& GetChanModes() const {
         return m_mceChanModes;
     }
@@ -152,9 +153,8 @@ class CIRCSock : public CIRCSocket {
     bool HasAccountNotify() const { return m_bAccountNotify; }
     bool HasExtendedJoin() const { return m_bExtendedJoin; }
     bool HasServerTime() const { return m_bServerTime; }
-    const std::set<char>& GetUserModes() const {
-        return m_scUserModes;
-    }
+    bool HasMessageTagCap() const { return m_bMessageTagCap; }
+    const std::set<char>& GetUserModes() const { return m_scUserModes; }
     // This is true if we are past raw 001
     bool IsAuthed() const { return m_bAuthed; }
     const SCString& GetAcceptedCaps() const { return m_ssAcceptedCaps; }
@@ -171,15 +171,18 @@ class CIRCSock : public CIRCSocket {
     // TODO move this function to CIRCNetwork and make it non-static?
     static bool IsFloodProtected(double fRate);
 
+    bool IsNickVisibleInAttachedChannels(const CString& sNick) const;
+
   private:
     // Message Handlers
     bool OnAccountMessage(CMessage& Message);
     bool OnActionMessage(CActionMessage& Message);
     bool OnAwayMessage(CMessage& Message);
     bool OnCapabilityMessage(CMessage& Message);
+    bool OnChgHostMessage(CChgHostMessage& Message);
     bool OnCTCPMessage(CCTCPMessage& Message);
     bool OnErrorMessage(CMessage& Message);
-    bool OnInviteMessage(CMessage& Message);
+    bool OnInviteMessage(CInviteMessage& Message);
     bool OnJoinMessage(CJoinMessage& Message);
     bool OnKickMessage(CKickMessage& Message);
     bool OnModeMessage(CModeMessage& Message);
@@ -190,6 +193,7 @@ class CIRCSock : public CIRCSocket {
     bool OnPingMessage(CMessage& Message);
     bool OnPongMessage(CMessage& Message);
     bool OnQuitMessage(CQuitMessage& Message);
+    bool OnTagMessage(CTargetMessage& Message);
     bool OnTextMessage(CTextMessage& Message);
     bool OnTopicMessage(CTopicMessage& Message);
     bool OnWallopsMessage(CMessage& Message);
@@ -211,6 +215,7 @@ class CIRCSock : public CIRCSocket {
     bool m_bAccountNotify;
     bool m_bExtendedJoin;
     bool m_bServerTime;
+    bool m_bMessageTagCap;
     CString m_sPerms;
     CString m_sPermModes;
     std::set<char> m_scUserModes;
@@ -223,10 +228,11 @@ class CIRCSock : public CIRCSocket {
     unsigned int m_uCapPaused;
     SCString m_ssAcceptedCaps;
     SCString m_ssPendingCaps;
+    SCString m_ssPendingCapsPhase2;
     MCString m_msCapLsValues;
-    time_t m_lastCTCP;
+    unsigned long long m_lastCTCP;
     unsigned int m_uNumCTCP;
-    static const time_t m_uCTCPFloodTime;
+    static const unsigned long long m_uCTCPFloodTime;
     static const unsigned int m_uCTCPFloodCount;
     MCString m_mISupport;
     std::deque<CMessage> m_vSendQueue;
@@ -234,6 +240,7 @@ class CIRCSock : public CIRCSocket {
     unsigned short int m_uFloodBurst;
     double m_fFloodRate;
     bool m_bFloodProtection;
+    unsigned long long m_lastFloodWarned;
     SCString m_ssSupportedTags;
     VCString m_vsSSLError;
 

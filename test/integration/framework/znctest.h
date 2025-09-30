@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,16 +16,17 @@
 
 #pragma once
 
-#include "base.h"
+#include <QLocalServer>
 #include <QNetworkAccessManager>
-#include <QNetworkRequest>
 #include <QNetworkReply>
-#include <QTcpServer>
+#include <QNetworkRequest>
 #include <QTemporaryDir>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
+
+#include "base.h"
 
 namespace znc_inttest {
 
@@ -52,8 +53,8 @@ class ZNCTest : public testing::Test {
     App m_app;
     QNetworkAccessManager m_network;
     QTemporaryDir m_dir;
-    QTcpServer m_server;
-    std::list<QTcpSocket> m_clients;
+    QLocalServer m_server;
+    std::list<QLocalSocket> m_clients;
 };
 
 }  // namespace znc_inttest

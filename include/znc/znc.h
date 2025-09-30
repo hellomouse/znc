@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -83,6 +83,8 @@ class CZNC : private CCoreTranslationMixin {
     void ClearTrustedProxies();
     bool AddTrustedProxy(const CString& sHost);
     bool RemTrustedProxy(const CString& sHost);
+    const SCString& GetClientCapBlacklist() const { return m_ssClientCapBlacklist; }
+    const SCString& GetServerCapBlacklist() const { return m_ssServerCapBlacklist; }
     void Broadcast(const CString& sMessage, bool bAdminOnly = false,
                    CUser* pSkipUser = nullptr, CClient* pSkipClient = nullptr);
     void AddBytesRead(unsigned long long u) { m_uBytesRead += u; }
@@ -202,11 +204,23 @@ class CZNC : private CCoreTranslationMixin {
     // Listener yummy
     CListener* FindListener(u_short uPort, const CString& BindHost,
                             EAddrType eAddr);
+    CListener* FindUnixListener(const CString& sPath);
     bool AddListener(CListener*);
+    bool AddTCPListener(unsigned short uPort, const CString& sBindHost,
+                        const CString& sURIPrefix, bool bSSL, EAddrType eAddr,
+                        CListener::EAcceptType eAccept, CString& sError);
+    bool AddUnixListener(const CString& sPath, const CString& sURIPrefix,
+                         bool bSSL, CListener::EAcceptType eAccept,
+                         const CString& sGroup, const CString& sMode, CString& sError);
+    bool DelListener(CListener*);
+
+    // For backwards-compatibility TODO: Remove
+    /// @deprecated use AddTCPListener
     bool AddListener(unsigned short uPort, const CString& sBindHost,
                      const CString& sURIPrefix, bool bSSL, EAddrType eAddr,
-                     CListener::EAcceptType eAccept, CString& sError);
-    bool DelListener(CListener*);
+                     CListener::EAcceptType eAccept, CString& sError) {
+        return AddTCPListener(uPort, sBindHost, sURIPrefix, bSSL, eAddr, eAccept, sError);
+    }
 
     // Message of the Day
     void SetMotd(const CString& sMessage) {
@@ -267,6 +281,8 @@ class CZNC : private CCoreTranslationMixin {
     CString MakeConfigHeader();
     bool AddListener(const CString& sLine, CString& sError);
     bool AddListener(CConfig* pConfig, CString& sError);
+    bool CheckSslAndPemFile(bool bSSL, CString& sError);
+    bool FinishAddingListener(CListener* pListener, CString& sError);
 
   protected:
     time_t m_TimeStarted;
@@ -294,6 +310,8 @@ class CZNC : private CCoreTranslationMixin {
     VCString m_vsBindHosts;  // TODO: remove (deprecated in 1.7.0)
     VCString m_vsTrustedProxies;
     VCString m_vsMotd;
+    SCString m_ssClientCapBlacklist;
+    SCString m_ssServerCapBlacklist;
     CFile* m_pLockFile;
     unsigned int m_uiConnectDelay;
     unsigned int m_uiAnonIPLimit;

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,7 +51,7 @@ class CIRCNetworkPingTimer : public CCron {
 
         if (pIRCSock &&
             pIRCSock->GetTimeSinceLastDataTransaction() >= uFrequency) {
-            pIRCSock->PutIRC("PING :ZNC");
+            pIRCSock->PutIRCQuick("PING :ZNC");
         }
 
         const vector<CClient*>& vClients = m_pNetwork->GetClients();
@@ -215,8 +215,7 @@ void CIRCNetwork::Clone(const CIRCNetwork& Network, bool bCloneName) {
     DelServers();
 
     for (CServer* pServer : vServers) {
-        AddServer(pServer->GetName(), pServer->GetPort(), pServer->GetPass(),
-                  pServer->IsSSL());
+        AddServer(*pServer);
     }
 
     m_uServerIdx = 0;
@@ -1168,6 +1167,11 @@ bool CIRCNetwork::DelServer(const CString& sName, unsigned short uPort,
         return false;
     }
 
+    CServer Server(sName, uPort, sPass);
+    return DelServer(Server);
+}
+
+bool CIRCNetwork::DelServer(const CServer& Server) {
     unsigned int a = 0;
     bool bSawCurrentServer = false;
     CServer* pCurServer = GetCurrentServer();
@@ -1178,11 +1182,16 @@ bool CIRCNetwork::DelServer(const CString& sName, unsigned short uPort,
 
         if (pServer == pCurServer) bSawCurrentServer = true;
 
-        if (!pServer->GetName().Equals(sName)) continue;
+        // Unix sockets can be removed with "unix:" prefix and without, both
+        // work - that's not part of GetName()
+        if (!pServer->GetName().Equals(Server.GetName())) continue;
 
-        if (uPort != 0 && pServer->GetPort() != uPort) continue;
+        // But it makes no sense to remove TCP server via "unix:hostname.com"
+        if (!pServer->IsUnixSocket() && Server.IsUnixSocket()) continue;
 
-        if (!sPass.empty() && pServer->GetPass() != sPass) continue;
+        if (Server.GetPort() != 6667 && pServer->GetPort() != Server.GetPort()) continue;
+
+        if (!Server.GetPass().empty() && pServer->GetPass() != Server.GetPass()) continue;
 
         m_vServers.erase(it);
 
@@ -1218,21 +1227,23 @@ bool CIRCNetwork::AddServer(const CString& sName) {
         return false;
     }
 
-    bool bSSL = false;
-    CString sLine = sName;
-    sLine.Trim();
+    return AddServer(CServer::Parse(sName));
+}
 
-    CString sHost = sLine.Token(0);
-    CString sPort = sLine.Token(1);
+bool CIRCNetwork::AddServer(CServer Server) {
+    if (Server.GetName().empty()) return false;
+#ifndef HAVE_LIBSSL
+    if (Server.IsSSL()) return false;
+#endif
 
-    if (sPort.TrimPrefix("+")) {
-        bSSL = true;
+    // Check if server is already added
+    for (CServer* pServer : m_vServers) {
+        if (*pServer == Server) return false;
     }
 
-    unsigned short uPort = sPort.ToUShort();
-    CString sPass = sLine.Token(2, true);
-
-    return AddServer(sHost, uPort, sPass, bSSL);
+    m_vServers.push_back(new CServer(std::move(Server)));
+    CheckIRCConnect();
+    return true;
 }
 
 bool CIRCNetwork::AddServer(const CString& sName, unsigned short uPort,
@@ -1247,30 +1258,7 @@ bool CIRCNetwork::AddServer(const CString& sName, unsigned short uPort,
         return false;
     }
 
-    if (!uPort) {
-        uPort = 6667;
-    }
-
-    // Check if server is already added
-    for (CServer* pServer : m_vServers) {
-        if (!sName.Equals(pServer->GetName())) continue;
-
-        if (uPort != pServer->GetPort()) continue;
-
-        if (sPass != pServer->GetPass()) continue;
-
-        if (bSSL != pServer->IsSSL()) continue;
-
-        // Server is already added
-        return false;
-    }
-
-    CServer* pServer = new CServer(sName, uPort, sPass, bSSL);
-    m_vServers.push_back(pServer);
-
-    CheckIRCConnect();
-
-    return true;
+    return AddServer(CServer(sName, uPort, sPass, bSSL));
 }
 
 CServer* CIRCNetwork::GetNextServer(bool bAdvance) {
@@ -1387,9 +1375,16 @@ bool CIRCNetwork::Connect() {
     }
 
     CString sSockName = "IRC::" + m_pUser->GetUsername() + "::" + m_sName;
-    CZNC::Get().GetManager().Connect(pServer->GetName(), pServer->GetPort(),
-                                     sSockName, 120, bSSL, GetBindHost(),
-                                     pIRCSock);
+
+    if (pServer->IsUnixSocket()) {
+        pIRCSock->SetSSL(bSSL);
+        CZNC::Get().GetManager().ConnectUnix(sSockName, pServer->GetName(),
+                                             pIRCSock);
+    } else {
+        CZNC::Get().GetManager().Connect(pServer->GetName(), pServer->GetPort(),
+                                         sSockName, 120, bSSL, GetBindHost(),
+                                         pIRCSock);
+    }
 
     return true;
 }

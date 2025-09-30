@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,9 +116,11 @@ class CClient : public CIRCSocket {
     bool HasCapNotify() const { return m_bCapNotify; }
     bool HasAwayNotify() const { return m_bAwayNotify; }
     bool HasAccountNotify() const { return m_bAccountNotify; }
+    bool HasInviteNotify() const { return m_bInviteNotify; }
     bool HasExtendedJoin() const { return m_bExtendedJoin; }
     bool HasNamesx() const { return m_bNamesx; }
     bool HasUHNames() const { return m_bUHNames; }
+    bool HasChgHost() const { return m_bChgHost; }
     bool IsAway() const { return m_bAway; }
     bool HasServerTime() const { return m_bServerTime; }
     bool HasBatch() const { return m_bBatch; }
@@ -137,6 +139,8 @@ class CClient : public CIRCSocket {
     void SetPlaybackActive(bool bActive) { m_bPlaybackActive = bActive; }
 
     void PutIRC(const CString& sLine);
+    // Strips prefix and potentially tags before sending to server.
+    void PutIRCStripping(CMessage Message);
     /** Sends a raw data line to the client.
      *  @param sLine The line to be sent.
      *
@@ -177,8 +181,10 @@ class CClient : public CIRCSocket {
      *
      *  Message type | Capability
      *  ------------ | ----------
-     *  \c ACCOUNT   | \l CClient::HasAccountNotify() (<a href="http://ircv3.net/specs/extensions/account-notify-3.1.html">account-notify</a>)
-     *  \c AWAY      | \l CClient::HasAwayNotify() (<a href="http://ircv3.net/specs/extensions/away-notify-3.1.html">away-notify</a>)
+     *  \c ACCOUNT   | \l CClient::HasAccountNotify() (<a href="http://ircv3.net/specs/extensions/account-notify">account-notify</a>)
+     *  \c AWAY      | \l CClient::HasAwayNotify() (<a href="http://ircv3.net/specs/extensions/away-notify">away-notify</a>)
+     *  \c INVITE    | \l CClient::HasInviteNotify() (<a href="http://ircv3.net/specs/extensions/invite-notify">invite-notify</a>) if someone else is invited; invites sent to this user are not filtered out regardless of any capability.
+     *  \c TAGMSG    | \l CClient::HasMessageTagCap() (<a href="http://ircv3.net/specs/extensions/message-tags">message-tags</a>)
      *
      *  ### Message tags
      *
@@ -190,6 +196,7 @@ class CClient : public CIRCSocket {
      *  ----------- | ----------
      *  \c time     | \l CClient::HasServerTime() (<a href="http://ircv3.net/specs/extensions/server-time-3.2.html">server-time</a>)
      *  \c batch    | \l CClient::HasBatch() (<a href="http://ircv3.net/specs/extensions/batch-3.2.html">batch</a>)
+     *  any tag     | \l CClient::HasMessageTagCap() (<a href="http://ircv3.net/specs/extensions/message-tags">message-tags</a>)
      *  
      *  Additional tags can be added via \l CClient::SetTagSupport().
      *
@@ -249,11 +256,33 @@ class CClient : public CIRCSocket {
     CIRCSock* GetIRCSock();
     CString GetFullName() const;
 
+    /** Sends AUTHENTIATE message to client.
+     * It encodes it to Base64 and splits to multiple IRC messages if necessary.
+     */
+    void SendSASLChallenge(CString sMessage);
+    void RefuseSASLLogin(const CString& sReason);
+    void AcceptSASLLogin(CUser& User);
+    /** Start potentially asynchronous process of checking the credentials.
+     * When finished, will send the success/failure SASL numerics to the
+     * client. This is mostly useful for SASL PLAIN.
+     * sAuthorizationId is internally passed through ParseUser() to extract
+     * network and client id.
+     * Currently sUser should match the username from
+     * sAuthorizationId: either in full, or just the username part; but in a
+     * future version we may add an ability to actually login as a different
+     * user, but with your password.
+     */
+    void StartSASLPasswordCheck(const CString& sUser, const CString& sPassword,
+                                const CString& sAuthorizationId);
+    /** Gathers username, client id, network name, if present. Returns username
+     * cleaned from client id and network name.
+     */
+    CString ParseUser(const CString& sAuthLine);
+
   private:
     void HandleCap(const CMessage& Message);
     void RespondCap(const CString& sResponse);
     void ParsePass(const CString& sAuthLine);
-    void ParseUser(const CString& sAuthLine);
     void ParseIdentifier(const CString& sAuthLine);
 
     template <typename T>
@@ -265,6 +294,15 @@ class CClient : public CIRCSocket {
     unsigned int DetachChans(const std::set<CChan*>& sChans);
 
     bool OnActionMessage(CActionMessage& Message);
+    void OnAuthenticateMessage(const CAuthenticateMessage& Message);
+    void AbortSASL(const CString& sFullIRCLine);
+    bool IsDuringSASL() const { return !m_sSASLMechanism.empty(); }
+
+    /**
+     * Returns set of all available SASL mechanisms.
+     */
+    SCString EnumerateSASLMechanisms() const;
+
     bool OnCTCPMessage(CCTCPMessage& Message);
     bool OnJoinMessage(CJoinMessage& Message);
     bool OnModeMessage(CModeMessage& Message);
@@ -273,6 +311,7 @@ class CClient : public CIRCSocket {
     bool OnPingMessage(CMessage& Message);
     bool OnPongMessage(CMessage& Message);
     bool OnQuitMessage(CQuitMessage& Message);
+    bool OnTagMessage(CTargetMessage& Message);
     bool OnTextMessage(CTextMessage& Message);
     bool OnTopicMessage(CTopicMessage& Message);
     bool OnOtherMessage(CMessage& Message);
@@ -286,25 +325,37 @@ class CClient : public CIRCSocket {
     bool m_bCapNotify;
     bool m_bAwayNotify;
     bool m_bAccountNotify;
+    bool m_bInviteNotify;
     bool m_bExtendedJoin;
     bool m_bNamesx;
     bool m_bUHNames;
+    bool m_bChgHost;
     bool m_bAway;
     bool m_bServerTime;
     bool m_bBatch;
     bool m_bEchoMessage;
     bool m_bSelfMessage;
+    bool m_bMessageTagCap;
+    bool m_bSASLCap;
     bool m_bPlaybackActive;
     CUser* m_pUser;
     CIRCNetwork* m_pNetwork;
     CString m_sNick;
     CString m_sPass;
+    // User who didn't necessarily login yet, or might not even exist.
     CString m_sUser;
     CString m_sNetwork;
     CString m_sIdentifier;
+    CString m_sSASLBuffer;
+    // Set while the exchange is in progress
+    CString m_sSASLMechanism;
+    // Username who successfully logged in using SASL. This is not a CUser*
+    // because between the 903 and CAP END the user could have been deleted.
+    CString m_sSASLUser;
     std::shared_ptr<CAuthBase> m_spAuth;
     SCString m_ssAcceptedCaps;
     SCString m_ssSupportedTags;
+    SCString m_ssPreviouslyFailedSASLMechanisms;
     // The capabilities supported by the ZNC core - capability names mapped to
     // change handler. Note: this lists caps which don't require support on IRC
     // server.

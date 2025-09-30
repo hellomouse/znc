@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,13 @@
 #include "znctestconfig.h"
 
 using testing::HasSubstr;
+using testing::Contains;
 using testing::ContainsRegex;
+using testing::SizeIs;
+using testing::Lt;
+using testing::Gt;
+using testing::AllOf;
+using testing::AnyOf;
 
 namespace znc_inttest {
 namespace {
@@ -90,7 +96,14 @@ TEST_F(ZNCTest, Channel) {
 TEST_F(ZNCTest, HTTP) {
     auto znc = Run();
     auto ircd = ConnectIRCd();
-    auto reply = HttpGet(QNetworkRequest(QUrl("http://127.0.0.1:12345/")));
+
+    auto client = LoginClient();
+    int port = PickPortNumber();
+    client.Write(QStringLiteral("znc addport %1 all all").arg(port).toUtf8());
+    client.ReadUntil(":Port added");
+
+    auto reply = HttpGet(QNetworkRequest(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/").arg(port))));
     EXPECT_THAT(reply->rawHeader("Server").toStdString(), HasSubstr("ZNC"));
 }
 
@@ -102,10 +115,17 @@ TEST_F(ZNCTest, FixCVE20149403) {
     ircd.Write(":server PING :1");
     ircd.ReadUntil("PONG 1");
 
+    auto client = LoginClient();
+    int port = PickPortNumber();
+    client.Write(QStringLiteral("znc addport %1 all all").arg(port).toUtf8());
+    client.ReadUntil(":Port added");
+
     QNetworkRequest request;
     request.setRawHeader("Authorization",
                          "Basic " + QByteArray("user:hunter2").toBase64());
-    request.setUrl(QUrl("http://127.0.0.1:12345/mods/global/webadmin/addchan"));
+    request.setUrl(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/mods/global/webadmin/addchan")
+                 .arg(port)));
     HttpPost(request, {
                           {"user", "user"},
                           {"network", "test"},
@@ -136,10 +156,18 @@ TEST_F(ZNCTest, FixFixOfCVE20149403) {
     ircd.Write(":server PING :12345");
     ircd.ReadUntil("PONG 12345");
 
+    auto client = LoginClient();
+    int port = PickPortNumber();
+    client.Write(QStringLiteral("znc addport %1 all all").arg(port).toUtf8());
+    client.ReadUntil(":Port added");
+
     QNetworkRequest request;
     request.setRawHeader("Authorization",
                          "Basic " + QByteArray("user:hunter2").toBase64());
-    request.setUrl(QUrl("http://127.0.0.1:12345/mods/global/webadmin/addchan"));
+    request.setUrl(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/mods/global/webadmin/addchan")
+                 .arg(port)
+                 .toUtf8()));
     auto reply = HttpPost(request, {
                                        {"user", "user"},
                                        {"network", "test"},
@@ -264,6 +292,10 @@ TEST_F(ZNCTest, AwayNotify) {
     client.ReadUntil("CAP user NEW :away-notify");
     client.Write("CAP REQ :away-notify");
     client.ReadUntil("ACK :away-notify");
+    // Fix for #1826 breaks this test. Join channel so this test does not fail.
+    client.Write(":nick JOIN #test");
+    ircd.ReadUntil("JOIN #test");
+    ircd.Write(":x!y@z JOIN #test");
     ircd.Write(":x!y@z AWAY :reason");
     client.ReadUntil(":x!y@z AWAY :reason");
     ircd.Close();
@@ -369,7 +401,10 @@ TEST_F(ZNCTest, MoveChannels) {
     client.Close();
 
     ircd.Write(":server 001 nick :Hello");
-    ircd.ReadUntil("JOIN #foo,#bar");
+    QByteArray joins;
+    ircd.ReadUntilAndGet("JOIN", joins);
+    ASSERT_THAT(joins.toStdString(), AnyOf(HasSubstr("JOIN #foo,#bar"),
+                                           HasSubstr("JOIN #bar,#foo")));
     ircd.Write(":nick JOIN :#foo");
     ircd.Write(":server 353 nick #foo :nick");
     ircd.Write(":server 366 nick #foo :End of /NAMES list");
@@ -743,6 +778,504 @@ TEST_F(ZNCTest, CapReqWithoutLs) {
     client.Write("NICK nick");
     client.Write("USER foo x x :x");
     ASSERT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr("Welcome")));
+}
+
+TEST_F(ZNCTest, ChgHostEmulation) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    ircd.Write("CAP user LS :chghost");
+    ircd.ReadUntil("CAP REQ :chghost");
+    ircd.Write("CAP user ACK :chghost");
+
+    auto client1 = LoginClient();
+    auto client2 = LoginClient();
+    client2.Write("CAP REQ :chghost");
+    client2.ReadUntil("ACK");
+
+    ircd.Write(":user!oldident@oldhost JOIN #chan");
+
+    ircd.Write(":user!oldident@oldhost CHGHOST newident newhost");
+    client1.ReadUntil(":user!oldident@oldhost QUIT :Changing hostname");
+    client1.ReadUntil(":user!newident@newhost JOIN #chan");
+    ASSERT_THAT(client1.ReadRemainder().toStdString(), Not(HasSubstr("MODE")));
+    client2.ReadUntil(":user!oldident@oldhost CHGHOST newident newhost");
+    client2.Close();
+
+    ircd.Write(":server MODE #chan +v user");
+    client1.ReadUntil("MODE");
+    ircd.Write(":user!newident@newhost CHGHOST ident-2 host-2");
+    client1.ReadUntil(":irc.znc.in MODE #chan +v user");
+
+    ircd.Write(":server MODE #chan +o user");
+    client1.ReadUntil("MODE");
+    ircd.Write(":user!ident-2@host-2 CHGHOST ident-3 host-3");
+    client1.ReadUntil(":irc.znc.in MODE #chan +ov user user");
+
+    // Only attached channel should receive emulation
+    ircd.Write(":user!ident-3@host-3 JOIN #chan2");
+    client1.ReadUntil("JOIN #chan2");
+    client1.Write("DETACH #chan2");
+    client1.ReadUntil("Detached 1 channel");
+    ircd.Write(":user!ident-3@host-3 CHGHOST ident host");
+    ASSERT_THAT(client1.ReadRemainder().toStdString(),
+                Not(HasSubstr("#chan2")));
+}
+
+TEST_F(ZNCTest, ChgHostOnce) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    ircd.Write("CAP user LS :chghost");
+    ircd.ReadUntil("CAP REQ :chghost");
+    ircd.Write("CAP user ACK :chghost");
+
+    auto client = LoginClient();
+    client.Write("CAP REQ :chghost");
+    client.ReadUntil("ACK");
+
+    ircd.Write(":user!oldident@oldhost JOIN #chan");
+    ircd.Write(":user!oldident@oldhost JOIN #chan2");
+    ircd.Write(":user!oldident@oldhost CHGHOST newident newhost");
+    client.ReadUntil("CHGHOST");
+    ASSERT_THAT(client.ReadRemainder().toStdString(),
+                Not(HasSubstr("CHGHOST")));
+}
+
+TEST_F(ZNCTest, ChgHostOnlyNicksAlreadyOnChannels) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    ircd.Write("CAP user LS :chghost");
+    ircd.ReadUntil("CAP REQ :chghost");
+    ircd.Write("CAP user ACK :chghost");
+
+    auto client = LoginClient();
+    ircd.Write(":user!ident@host JOIN #chan1");
+    ircd.Write(":user!ident@host JOIN #chan2");
+    ircd.Write(":another!ident@host JOIN #chan1");
+    client.ReadUntil("another");
+
+    ircd.Write(":another!ident@host CHGHOST i2 h2");
+    ASSERT_THAT(client.ReadRemainder().toStdString(),
+                AllOf(HasSubstr("JOIN #chan1"),
+                    Not(HasSubstr("JOIN #chan2"))));
+}
+
+TEST_F(ZNCTest, SaslAuthPlainSimple) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("\0user\0hunter2").toBase64());
+    client.ReadUntil(":irc.znc.in 903 foo :SASL authentication successful");
+}
+
+TEST_F(ZNCTest, SaslAuthPlainCopyInZ) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("user@phone\0user@phone\0hunter2").toBase64());
+    client.ReadUntil(":irc.znc.in 903 foo :SASL authentication successful");
+    client.Write("CAP END");
+    client.Write("znc listclients");
+    client.ReadUntil("phone");
+}
+
+TEST_F(ZNCTest, SaslAuthPlainPartialInZ) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("user@phone\0user\0hunter2").toBase64());
+    client.ReadUntil(":irc.znc.in 903 foo :SASL authentication successful");
+    client.Write("CAP END");
+    client.Write("znc listclients");
+    client.ReadUntil("phone");
+}
+
+TEST_F(ZNCTest, SaslAuthPlainDifferentZ) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("user@phone\0user@tablet\0hunter2").toBase64());
+    client.ReadUntil(":irc.znc.in 904 foo :No support for custom AuthzId");
+}
+
+TEST_F(ZNCTest, SaslAuthPlainWrongPassword) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("\0user\0hunter3").toBase64());
+    client.ReadUntil(":irc.znc.in 904 foo :Invalid Password");
+
+    // Try again on the same connection
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil(":irc.znc.in 904 foo :SASL authentication failed");
+}
+
+TEST_F(ZNCTest, SaslAuthPlainWrongUser) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE " + QByteArrayLiteral("\0anotheruser\0hunter2").toBase64());
+    client.ReadUntil(":irc.znc.in 904 foo :Invalid Password");
+}
+
+TEST_F(ZNCTest, SaslAuthUserAfterCapEnd) {
+    // kvirc sends this
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("CAP LS");
+    client.Write("PING :::1");
+    client.Write("CAP REQ :sasl");
+    client.Write("AUTHENTICATE PLAIN");
+    client.Write("AUTHENTICATE " +
+                 QByteArrayLiteral("\0user\0hunter2").toBase64());
+    client.Write("CAP END");
+    client.ReadUntil("903 unknown-nick :SASL authentication successful");
+    client.Write("NICK nick");
+    client.Write("USER user 0 1 :2");
+    client.ReadUntil("001");
+}
+
+TEST_F(ZNCTest, SaslAuthAbort) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS");
+    client.ReadUntil(" sasl ");
+    client.Write("CAP REQ :sasl");
+    client.ReadUntil(":irc.znc.in CAP foo ACK :sasl");
+    client.Write("USER bar");
+    client.Write("AUTHENTICATE PLAIN");
+    client.ReadUntil("AUTHENTICATE +");
+    client.Write("AUTHENTICATE *");
+    client.ReadUntil(":irc.znc.in 906 foo :SASL authentication aborted");
+}
+
+TEST_F(ZNCTest, SpacedServerPassword) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write(("znc delserver unix:" + m_dir.path() + "/inttest.ircd").toUtf8());
+    client.Write(("znc addserver unix:" + m_dir.path() + "/inttest.ircd a b").toUtf8());
+    client.Write("znc jump");
+    auto ircd2 = ConnectIRCd();
+    ircd2.ReadUntil("PASS :a b");
+    client.Write(("znc delserver unix:" + m_dir.path() + "/inttest.ircd").toUtf8());
+    client.Write(("znc addserver unix:" + m_dir.path() + "/inttest.ircd a").toUtf8());
+    client.Write("znc jump");
+    auto ircd3 = ConnectIRCd();
+    // No :
+    ircd3.ReadUntil("PASS a");
+}
+
+TEST_F(ZNCTest, TagMsg) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    ircd.Write("001 nick Welcome");
+
+    client.Write("@foo=bar PRIVMSG #foo hi");
+    ircd.ReadUntil("\nPRIVMSG");
+
+    client.Write("TAGMSG #foo");
+    ASSERT_THAT(ircd.ReadRemainder().toStdString(), Not(HasSubstr("TAGMSG")));
+
+    ircd.Write("@foo=bar :friend PRIVMSG #foo hi");
+    client.ReadUntil("\n:friend PRIVMSG");
+
+    ircd.Write("TAGMSG #foo");
+    ASSERT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr("TAGMSG")));
+
+    client.Write("CAP REQ :message-tags");
+    client.ReadUntil("ACK");
+
+    ircd.Write("@foo TAGMSG #foo");
+    client.ReadUntil("@foo TAGMSG #foo");
+
+    ircd.Write("CAP * ACK message-tags");
+    // barrier to make client wait before sending TAGMSG
+    ircd.Write(":friend PRIVMSG #foo hi");
+    client.ReadUntil("friend");
+
+    client.Write("@foo=bar TAGMSG #foo");
+    ircd.ReadUntil("@foo=bar TAGMSG #foo");
+
+    client.Write("CAP REQ echo-message");
+    client.Write("@baz TAGMSG #foo");
+    client.ReadUntil("@baz :nick TAGMSG #foo");
+
+    // Check buffers
+    client.Write("znc addnetwork other");
+    client.Write("znc jumpnetwork other");
+    client.ReadUntil(":Switched to other");
+
+    ircd.Write(":nick JOIN #bar");
+    ircd.Write("@bar TAGMSG #bar");
+    ASSERT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr("TAGMSG")));
+    client.Write("znc jumpnetwork test");
+    client.ReadUntil("@bar TAGMSG #bar");
+}
+
+TEST_F(ZNCTest, StatusAction) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    ircd.Write("001 nick Welcome");
+
+    client.Write("PRIVMSG *status :\1ACTION waves\1");
+    client.Write("PRIVMSG *status :\1VERSION\1");
+    ASSERT_THAT(ircd.ReadRemainder().toStdString(), Not(HasSubstr("PRIVMSG")));
+}
+
+TEST_F(ZNCTest, InviteNotify) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("CAP REQ invite-notify");
+    client.ReadUntil("ACK");
+    auto client2 = LoginClient();
+
+    InstallModule("testmod.cpp", R"(
+        #include <znc/Modules.h>
+        class TestModule : public CModule {
+          public:
+            MODCONSTRUCTOR(TestModule) {}
+            EModRet OnInviteMessage(CInviteMessage& Msg) override {
+                PutIRC("__MSG__ " + Msg.ToString());
+                return CONTINUE;
+            }
+            EModRet OnInvite(const CNick& Nick, const CString& sChan) override {
+                PutIRC("__INV__ " + Nick.GetNickMask() + " " + sChan);
+                return CONTINUE;
+            }
+        };
+        GLOBALMODULEDEFS(TestModule, "Test")
+    )");
+    client.Write("znc loadmod testmod");
+    client.ReadUntil("Loaded module testmod");
+
+    ircd.Write("001 nick Welcome");
+
+    ircd.Write(":source!id@ho INVITE nick #chan");
+    client.ReadUntil(":source!id@ho INVITE nick #chan");
+    client2.ReadUntil(":source!id@ho INVITE nick #chan");
+    ircd.ReadUntil("__MSG__ :source!id@ho INVITE nick #chan");
+    ircd.ReadUntil("__INV__ source!id@ho #chan");
+
+    ircd.Write(":source!id@ho INVITE someone #chan");
+    client.ReadUntil(":source!id@ho INVITE someone #chan");
+    ASSERT_THAT(client2.ReadRemainder().toStdString(), Not(HasSubstr("someone")));
+    ircd.ReadUntil("__MSG__ :source!id@ho INVITE someone #chan");
+    ASSERT_THAT(ircd.ReadRemainder().toStdString(), Not(HasSubstr("__INV__")));
+}
+
+TEST_F(ZNCTest, DisableCap) {
+    {
+        QFile conf(m_dir.path() + "/configs/znc.conf");
+        ASSERT_TRUE(conf.open(QIODevice::Append | QIODevice::Text));
+        QTextStream out(&conf);
+        out << R"(
+            DisableClientCap = sasl
+            DisableClientCap = away-notify
+            DisableServerCap = chghost
+        )";
+    }
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+
+    ircd.Write("CAP user LS :chghost");
+    ASSERT_THAT(ircd.ReadRemainder().toStdString(), Not(HasSubstr("chghost")));
+
+    auto client = ConnectClient();
+    client.Write("NICK foo");
+    client.Write("CAP LS 302");
+    ASSERT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr("sasl")));
+    client.Write("CAP REQ sasl");
+    client.ReadUntil("CAP foo NAK :sasl");
+
+    client.Write("PASS :hunter2");
+    client.Write("USER user/test x x :x");
+    client.Write("CAP END");
+    client.ReadUntil("001");
+
+    // Server-dependent
+    ircd.Write("001 nick Welcome");
+    ircd.Write("CAP nick NEW away-notify");
+    ircd.ReadUntil("CAP REQ :away-notify");
+    ircd.Write("CAP nick ACK away-notify");
+    ASSERT_THAT(client.ReadRemainder().toStdString(),
+                Not(AllOf(HasSubstr("NEW"), HasSubstr("away-notify"))));
+}
+
+TEST_F(ZNCTest, ManyCapsInReq) {
+    constexpr int prefix = std::string_view("CAP NAK :").length();
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    ircd.Write(
+        "CAP user LS :away-notify invite-notify extended-join "
+        "userhost-in-names multi-prefix cap-notify "
+        "sasl=ANONYMOUS,EXTERNAL,PLAIN setname tls chghost account-notify "
+        "message-tags batch server-time account-tag echo-message "
+        "labeled-response");
+    QByteArray caps, caps2, caps3;
+    ircd.ReadUntilAndGet("CAP REQ :", caps);
+    caps.remove(0, prefix);
+    EXPECT_THAT(caps.toStdString(), SizeIs(AllOf(Gt(10), Lt(100))));
+    ircd.Write("CAP user NAK :" + caps);
+    ircd.ReadUntilAndGet("CAP REQ :", caps2);
+    caps2.remove(0, prefix);
+    EXPECT_THAT(caps2.toStdString(), SizeIs(AllOf(Gt(10), Lt(100))));
+    ircd.Write("CAP user ACK :" + caps2);
+    // Now it should retry one of the first batch
+    ircd.ReadUntilAndGet("CAP REQ :", caps3);
+    caps3.remove(0, prefix);
+    EXPECT_THAT(caps3.toStdString(), Not(HasSubstr(" ")));
+    EXPECT_THAT(caps.split(' '), Contains(caps3));
+}
+
+TEST_F(ZNCTest, JoinWhileRegistration) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    // First JOIN just adds channel to the list, second one updates the key and
+    // sends JOIN from CChan::JoinUser. Both should be delayed until
+    // registration ends.
+    client.Write("JOIN #foo");
+    client.Write("JOIN #foo");
+    EXPECT_THAT(ircd.ReadRemainder().toStdString(), Not(HasSubstr("JOIN")));
+    ircd.Write(":server 001 nick :Hello");
+    ircd.ReadUntil("JOIN #foo");
+}
+
+TEST_F(ZNCTest, Issue1960) {
+    auto znc = Run();
+    auto ircd1 = ConnectIRCd();
+    auto client = LoginClient();
+    ircd1.Write("CAP user ACK :message-tags");
+    ircd1.Write(":server 001 nick :Hello");
+    ircd1.Write(":server 005 nick blahblah");
+    client.ReadUntil("blahblah");
+    client.Write("znc addnetwork second");
+    client.Write("znc jumpnetwork second");
+    client.Write("znc addserver unix:" + m_dir.path().toUtf8() + "/inttest.ircd");
+    auto ircd2 = ConnectIRCd();
+    ircd2.Write("CAP user ACK :message-tags");
+    ircd2.Write(":server 001 nick :Hello");
+    client.ReadUntil("Connected");
+    client.Write("@foo TAGMSG #bar");
+    ircd2.ReadUntil("@foo TAGMSG #bar");
+}
+
+TEST_F(ZNCTest, DisconnectedTagmsgCrash) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc disconnect");
+    client.ReadUntil("Disconnected");
+    client.Write("@foo TAGMSG #foo");
+    client.Write("znc help");
+    client.ReadUntil("AddServer");
+}
+
+// https://github.com/znc/znc/issues/1826
+TEST_F(ZNCTest, CAPDetached) {
+    auto znc = Run();
+    auto ircd = ConnectIRCd();
+
+    ircd.Write("CAP user LS :away-notify");
+    ircd.ReadUntil("CAP REQ :away-notify");
+    ircd.Write("CAP user ACK :away-notify");
+
+    ircd.Write("CAP user LS :chghost");
+    ircd.ReadUntil("CAP REQ :chghost");
+    ircd.Write("CAP user ACK :chghost");
+
+    ircd.Write("CAP user LS :account-notify");
+    ircd.ReadUntil("CAP REQ :account-notify");
+    ircd.Write("CAP user ACK :account-notify");
+
+    auto client = LoginClient();
+
+    client.Write("CAP LS");
+
+    client.Write("CAP REQ :cap-notify");
+    client.ReadUntil("ACK :cap-notify");
+    client.Write("CAP REQ :away-notify");
+    client.ReadUntil("ACK :away-notify");
+    client.Write("CAP REQ :chghost");
+    client.ReadUntil("ACK :chghost");
+    client.Write("CAP REQ :account-notify");
+    client.ReadUntil("ACK :account-notify");
+    client.Write("CAP END");
+
+    client.Write(":nick!ident@host JOIN #test");
+    ircd.Write(":test!test@test JOIN #test");
+    client.ReadUntil(":test!test@test JOIN #test");
+    ircd.Write("353 nick = #test :nick!ident@host test!test@test");
+    ircd.Write("366 nick #test :End of /NAMES list.");
+    client.ReadUntil("#test :End of /NAMES");
+    client.Write("znc detach #test");
+    client.ReadUntil(":*status!status@znc.in PRIVMSG nick :Detached 1 channel");
+
+    ircd.Write(":test!test@test ACCOUNT test");
+    EXPECT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr(":test!test@test ACCOUNT test")))
+        << "Client saw account-notify even though all channels are detached";
+
+    ircd.Write(":test!test@test AWAY :going away");
+    EXPECT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr(":test!test@test AWAY :going away")))
+        << "Client saw away-notify even though all channels are detached";
+
+    ircd.Write(":test!test@test CHGHOST test detached.test");
+    EXPECT_THAT(client.ReadRemainder().toStdString(), Not(HasSubstr(":test!test@test CHGHOST test detached.test")))
+        << "Client saw chghost even though all channels are detached";
 }
 
 }  // namespace

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -65,8 +65,10 @@ class CMessage {
         Unknown,
         Account,
         Action,
+        Authenticate,
         Away,
         Capability,
+        ChgHost,
         CTCP,
         Error,
         Invite,
@@ -80,10 +82,19 @@ class CMessage {
         Ping,
         Pong,
         Quit,
+        TagMsg,
         Text,
         Topic,
         Wallops,
     };
+    /**
+     * Returns which type of message this is.
+     *
+     * This is mostly about which subclass of CMessage is intended to be used,
+     * but does not map 1:1 to the subclasses. The number is NOT guaranteed to
+     * be the same across ZNC versions. For practical purposes, GetCommand() may
+     * be more useful.
+     */
     Type GetType() const { return m_eType; }
 
     bool Equals(const CMessage& Other) const;
@@ -121,6 +132,7 @@ class CMessage {
      */
     VCString GetParamsSplit(unsigned int uIdx, unsigned int uLen = -1) const;
     void SetParams(const VCString& vsParams);
+    void SetParams(VCString&& vsParams);
 
     /// @deprecated use GetParamsColon() instead.
     CString GetParams(unsigned int uIdx, unsigned int uLen = -1) const
@@ -136,6 +148,7 @@ class CMessage {
     void SetTime(const timeval& ts) { m_time = ts; }
 
     const MCString& GetTags() const { return m_mssTags; }
+    MCString& GetTags() { return m_mssTags; }
     void SetTags(const MCString& mssTags) { m_mssTags = mssTags; }
 
     CString GetTag(const CString& sKey) const;
@@ -237,6 +250,13 @@ class CActionMessage : public CTargetMessage {
 };
 REGISTER_ZNC_MESSAGE(CActionMessage);
 
+class CAuthenticateMessage : public CMessage {
+  public:
+    CString GetText() const { return GetParam(0); }
+    void SetText(const CString& sText) { SetParam(0, sText); }
+};
+REGISTER_ZNC_MESSAGE(CAuthenticateMessage);
+
 class CCTCPMessage : public CTargetMessage {
   public:
     bool IsReply() const { return GetCommand().Equals("NOTICE"); }
@@ -299,6 +319,15 @@ class CKickMessage : public CTargetMessage {
 };
 REGISTER_ZNC_MESSAGE(CKickMessage);
 
+class CInviteMessage : public CMessage {
+  public:
+    CString GetInvitedNick() const { return GetParam(0); }
+    void SetInvitedNick(const CString& sNick) { SetParam(0, sNick); }
+    CString GetChannel() const { return GetParam(1); }
+    void SetChannel(const CString& sChannel) { SetParam(1, sChannel); }
+};
+REGISTER_ZNC_MESSAGE(CInviteMessage);
+
 class CPartMessage : public CTargetMessage {
   public:
     CString GetReason() const { return GetParam(1); }
@@ -332,5 +361,14 @@ class CTopicMessage : public CTargetMessage {
     void SetText(const CString& sText) { SetTopic(sText); }
 };
 REGISTER_ZNC_MESSAGE(CTopicMessage);
+
+class CChgHostMessage : public CMessage {
+  public:
+    CString GetNewIdent() const { return GetParam(0); }
+    void SetNewIdent(const CString& sIdent) { SetParam(0, sIdent); }
+    CString GetNewHost() const { return GetParam(1); }
+    void SetNewHost(const CString& sHost) { SetParam(1, sHost); }
+};
+REGISTER_ZNC_MESSAGE(CChgHostMessage);
 
 #endif  // !ZNC_MESSAGE_H

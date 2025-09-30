@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  * Copyright (C) 2008 by Stefan Rado
  * based on admin.cpp by Sebastian Ramacher
  * based on admin.cpp in crox branch
@@ -21,6 +21,7 @@
 #include <znc/IRCNetwork.h>
 #include <znc/Chan.h>
 #include <znc/IRCSock.h>
+#include <znc/Server.h>
 
 using std::map;
 using std::vector;
@@ -1249,6 +1250,10 @@ class CAdminMod : public CModule {
             PutModule(
                 t_s("Usage: AddServer <username> <network> <server> [[+]port] "
                     "[password]"));
+            if (GetUser()->IsAdmin()) {
+                PutModule(t_s("Or: AddServer <username> <network> unix:[ssl:]/path/to/socket"));
+            }
+            PutModule(t_s("+ means SSL"));
             return;
         }
 
@@ -1265,7 +1270,13 @@ class CAdminMod : public CModule {
             return;
         }
 
-        if (pNetwork->AddServer(sServer))
+        CServer Server = CServer::Parse(sServer);
+        if (Server.IsUnixSocket() && !GetUser()->IsAdmin()) {
+            PutModule(t_s("Access denied!"));
+            return;
+        }
+
+        if (pNetwork->AddServer(std::move(Server)))
             PutModule(t_f("Added IRC Server {1} to network {2} for user {3}.")(
                 sServer, pNetwork->GetName(), pUser->GetUsername()));
         else
@@ -1278,8 +1289,6 @@ class CAdminMod : public CModule {
         CString sUsername = sLine.Token(1);
         CString sNetwork = sLine.Token(2);
         CString sServer = sLine.Token(3, true);
-        unsigned short uPort = sLine.Token(4).ToUShort();
-        CString sPass = sLine.Token(5);
 
         if (sServer.empty()) {
             PutModule(
@@ -1301,7 +1310,7 @@ class CAdminMod : public CModule {
             return;
         }
 
-        if (pNetwork->DelServer(sServer, uPort, sPass))
+        if (pNetwork->DelServer(CServer::Parse(sServer)))
             PutModule(
                 t_f("Deleted IRC Server {1} from network {2} for user {3}.")(
                     sServer, pNetwork->GetName(), pUser->GetUsername()));

@@ -51,7 +51,7 @@ Character Encodings:
 * To get proper character encoding and charsets install ICU (`libicu4-dev`)
 
 I18N (UI translation):
-* Boost.Locale
+* Boost.Locale 1.70 or later
 * gettext is a build dependency
 
 Argon2 password hash:
@@ -78,6 +78,10 @@ but calls CMake with CMake-style parameters.
 Note for FreeBSD users:
 By default base OpenSSL is selected.
 If you want the one from ports, use `-DOPENSSL_ROOT_DIR=/usr/local`.
+
+If you want to install ZNC in a custom path, run `cmake` with the `-DCMAKE_INSTALL_PREFIX` argument or `./configure` with `--prefix` argument.
+Example:
+`cmake .. -DCMAKE_INSTALL_PREFIX=/home/user/znc`
 
 For troubleshooting, `cmake --system-information` will show you details.
 

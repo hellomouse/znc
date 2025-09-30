@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -151,7 +151,9 @@ void CChan::JoinUser(const CString& sKey) {
     if (!IsOn() && !sKey.empty()) {
         SetKey(sKey);
     }
-    m_pNetwork->PutIRC("JOIN " + GetName() + " " + GetKey());
+    if (m_pNetwork->IsIRCConnected()) {
+        m_pNetwork->PutIRC("JOIN " + GetName() + " " + GetKey());
+    }
 }
 
 void CChan::AttachUser(CClient* pClient) {

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,6 +30,11 @@ class CRawMod : public CModule {
 
     EModRet OnUserRaw(CString& sLine) override {
         PutModule("YOU -> [" + sLine + "]");
+        return CONTINUE;
+    }
+
+    EModRet OnSendToIRCMessage(CMessage& Message) override {
+        PutModule("ZNC -> [" + Message.ToString() + "]");
         return CONTINUE;
     }
 };

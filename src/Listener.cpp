@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,38 +14,184 @@
  * limitations under the License.
  */
 
+#include <sys/types.h>
+#include <grp.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 #include <znc/Listener.h>
+#include <znc/Config.h>
 #include <znc/znc.h>
 
 CListener::~CListener() {
     if (m_pListener) CZNC::Get().GetManager().DelSockByAddr(m_pListener);
 }
 
-bool CListener::Listen() {
+CConfig CListener::ToConfig() const {
+    CConfig listenerConfig;
+
+    listenerConfig.AddKeyValuePair("URIPrefix", GetURIPrefix() + "/");
+
+    listenerConfig.AddKeyValuePair("SSL", CString(IsSSL()));
+
+    listenerConfig.AddKeyValuePair(
+        "AllowIRC",
+        CString(GetAcceptType() != CListener::ACCEPT_HTTP));
+    listenerConfig.AddKeyValuePair(
+        "AllowWeb",
+        CString(GetAcceptType() != CListener::ACCEPT_IRC));
+
+    return listenerConfig;
+}
+
+void CListener::SetupSSL() const {
+#ifdef HAVE_LIBSSL
+    if (IsSSL()) {
+        m_pListener->SetSSL(true);
+        m_pListener->SetPemLocation(CZNC::Get().GetPemLocation());
+        m_pListener->SetKeyLocation(CZNC::Get().GetKeyLocation());
+        m_pListener->SetDHParamLocation(CZNC::Get().GetDHParamLocation());
+    }
+#endif
+}
+
+CTCPListener::~CTCPListener() {
+}
+
+bool CTCPListener::Listen() {
     if (!m_uPort || m_pListener) {
         errno = EINVAL;
         return false;
     }
 
     m_pListener = new CRealListener(*this);
-
-    bool bSSL = false;
-#ifdef HAVE_LIBSSL
-    if (IsSSL()) {
-        bSSL = true;
-        m_pListener->SetPemLocation(CZNC::Get().GetPemLocation());
-        m_pListener->SetKeyLocation(CZNC::Get().GetKeyLocation());
-        m_pListener->SetDHParamLocation(CZNC::Get().GetDHParamLocation());
-    }
-#endif
+    SetupSSL();
 
     // If e.g. getaddrinfo() fails, the following might not set errno.
     // Make sure there is a consistent error message, not something random
     // which might even be "Error: Success".
     errno = EINVAL;
     return CZNC::Get().GetManager().ListenHost(m_uPort, "_LISTENER",
-                                               m_sBindHost, bSSL, SOMAXCONN,
+                                               m_sBindHost, IsSSL(), SOMAXCONN,
                                                m_pListener, 0, m_eAddr);
+}
+
+CConfig CTCPListener::ToConfig() const {
+    CConfig listenerConfig = CListener::ToConfig();
+
+    listenerConfig.AddKeyValuePair("Host", GetBindHost());
+    listenerConfig.AddKeyValuePair("Port", CString(GetPort()));
+
+    listenerConfig.AddKeyValuePair(
+        "IPv4", CString(GetAddrType() != ADDR_IPV6ONLY));
+    listenerConfig.AddKeyValuePair(
+        "IPv6", CString(GetAddrType() != ADDR_IPV4ONLY));
+
+    return listenerConfig;
+}
+
+CUnixListener::CUnixListener(const CString& sPath, const CString& sURIPrefix,
+                             bool bSSL, EAcceptType eAccept,
+                             const CString& sGid, const CString& sMode)
+    : CListener(sURIPrefix, bSSL, eAccept),
+      m_sPath(sPath),
+      m_sGid(sGid),
+      m_iMode(-1) {
+    if (!sMode.empty()) {
+        std::istringstream s(sMode);
+        s >> std::oct >> m_iMode;
+    }
+}
+
+CUnixListener::~CUnixListener() {}
+
+bool CUnixListener::Listen() {
+    if (m_pListener) {
+        errno = EINVAL;
+        return false;
+    }
+
+    m_pListener = new CRealListener(*this);
+    SetupSSL();
+
+    if (!CZNC::Get().GetManager().ListenUnix("UNIX_LISTENER", m_sPath,
+                                             m_pListener))
+        return false;
+
+    if (!m_sGid.empty()) {
+        bool bSuccess = [&]() -> bool {
+            std::vector<char> buffer(100);
+            group gr{};
+            group* result;
+        retrysize:
+            int err = getgrnam_r(m_sGid.c_str(), &gr, buffer.data(),
+                                 buffer.size(), &result);
+            switch (err) {
+                case ERANGE: {
+                    if (buffer.size() > 10000) {
+                        DEBUG("Can't get gid due to memory size");
+                        return false;
+                    }
+                    buffer.resize(buffer.size() + 100);
+                    goto retrysize;
+                }
+                case 0: {
+                    if (!result) {
+                        DEBUG("Group not found");
+                        return false;
+                    }
+                    if (chown(m_sPath.c_str(), -1, result->gr_gid)) {
+                        char* e = strerror(errno);
+                        DEBUG("Can't chmod: " << e);
+                        return false;
+                    }
+                    break;
+                }
+                default: {
+                    char* e = strerror(err);
+                    DEBUG("Error while getting gid " << e);
+                    return false;
+                }
+            }
+            return true;
+        }();
+        if (!bSuccess) {
+            m_pListener->Close();
+            return false;
+        }
+    }
+
+    if (m_iMode != -1) {
+        if (chmod(m_sPath.c_str(), m_iMode)) {
+            char* e = strerror(errno);
+            DEBUG("Error while chmod " << e);
+            m_pListener->Close();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+CConfig CUnixListener::ToConfig() const {
+    CConfig listenerConfig = CListener::ToConfig();
+
+    listenerConfig.AddKeyValuePair("Path", GetPath());
+    if (!m_sGid.empty()) listenerConfig.AddKeyValuePair("Group", m_sGid);
+    if (m_iMode != -1) {
+        listenerConfig.AddKeyValuePair("Mode", GetMode());
+    }
+
+    return listenerConfig;
+}
+
+CString CUnixListener::GetMode() const {
+    std::ostringstream s;
+    if (m_iMode != -1) {
+        s << std::oct << m_iMode;
+    }
+    return s.str();
 }
 
 void CListener::ResetRealListener() { m_pListener = nullptr; }

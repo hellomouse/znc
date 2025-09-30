@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+# Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -47,7 +47,12 @@ class Socket:
         return AsPyModule(self._csock.GetModule()).GetNewPyObj()
 
     def Listen(self, addrtype='all', port=None, bindhost='', ssl=False,
-               maxconns=GetSOMAXCONN(), timeout=0):
+               maxconns=GetSOMAXCONN(), timeout=0, path=''):
+        if addrtype == 'unix':
+            return self.GetModule().GetManager().ListenUnix(
+                self.ConstructSockName("Py-LU"),
+                path, self._csock)
+
         try:
             addr = self.ADDR_MAP[addrtype.lower()]
         except KeyError:
@@ -55,7 +60,7 @@ class Socket:
                 "Specified addrtype [{0}] isn't supported".format(addrtype))
 
         args = (
-            "python socket for {0}".format(self.GetModule()),
+            self.ConstructSockName("Py-L"),
             bindhost,
             ssl,
             maxconns,
@@ -76,11 +81,17 @@ class Socket:
         return self.GetModule().GetManager().Connect(
             host,
             port,
-            'python conn socket for {0}'.format(self.GetModule()),
+            self.ConstructSockName("Py-C"),
             timeout,
             ssl,
             bindhost,
             self._csock
+        )
+
+    def ConnectUnix(self, path):
+        return self.GetModule().GetManager().ConnectUnix(
+            self.ConstructSockName("Py-CU"),
+            path, self._csock
         )
 
     def Write(self, data):
@@ -478,6 +489,18 @@ class Module:
     def OnClientCapRequest(self, pClient, sCap, bState):
         pass
 
+    def OnClientGetSASLMechanisms(self, ssMechanisms):
+        pass
+
+    def OnClientSASLServerInitialChallenge(self, sMechanism, sResponse):
+        pass
+
+    def OnClientSASLAuthenticate(self, sMechanism, sMessage):
+        pass
+
+    def OnClientSASLAborted(self):
+        pass
+
     def OnModuleLoading(self, sModName, sArgs, eType, bSuccess, sRetMsg):
         pass
 
@@ -690,6 +713,18 @@ class Module:
         pass
 
     def OnSendToIRCMessage(self, msg):
+        pass
+
+    def OnUserTagMessage(self, msg):
+        pass
+
+    def OnChanTagMessage(self, msg):
+        pass
+
+    def OnPrivTagMessage(self, msg):
+        pass
+
+    def OnInviteMessage(self, msg):
         pass
 
 

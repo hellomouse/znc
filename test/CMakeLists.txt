@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+# Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -90,7 +90,7 @@ externalproject_add(inttest_bin
 	"-DGTEST_ROOT:path=${GTEST_ROOT}"
 	"-DGMOCK_ROOT:path=${GMOCK_ROOT}"
 	"-DZNC_BIN_DIR:path=${CMAKE_INSTALL_FULL_BINDIR}"
-	"-DQt5_HINTS:path=${brew_qt5}")
+	"-DQt_HINTS:path=${brew_qt}")
 add_custom_target(inttest COMMAND
 	#   MAKEFLAGS:
 	# Prevent a warning from test of znc-buildmod, when inner make
@@ -102,5 +102,7 @@ add_custom_target(inttest COMMAND
 	# znc-buildmod should use the correct compiler.
 	# https://bugs.gentoo.org/699258 is an example of how it can go wrong.
 	${CMAKE_COMMAND} -E env MAKEFLAGS= CXX=${CMAKE_CXX_COMPILER}
-	"${CMAKE_CURRENT_BINARY_DIR}/integration/inttest")
+	"INTTEST_BIN=${CMAKE_CURRENT_BINARY_DIR}/integration/inttest"
+	"${PROJECT_SOURCE_DIR}/third_party/gtest-parallel/gtest-parallel"
+	"${CMAKE_CURRENT_SOURCE_DIR}/integration/wrapper.py")
 add_dependencies(inttest inttest_bin)

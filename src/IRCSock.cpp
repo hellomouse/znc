@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ using std::map;
     NETWORKMODULECALL(macFUNC, m_pNetwork->GetUser(), m_pNetwork, nullptr, \
                       macEXITER)
 // These are used in OnGeneralCTCP()
-const time_t CIRCSock::m_uCTCPFloodTime = 5;
+const unsigned long long CIRCSock::m_uCTCPFloodTime = 5000;
 const unsigned int CIRCSock::m_uCTCPFloodCount = 5;
 
 // It will be bad if user sets it to 0.00000000000001
@@ -69,6 +69,7 @@ CIRCSock::CIRCSock(CIRCNetwork* pNetwork)
       m_bAccountNotify(false),
       m_bExtendedJoin(false),
       m_bServerTime(false),
+      m_bMessageTagCap(false),
       m_sPerms("*!@%+"),
       m_sPermModes("qaohv"),
       m_scUserModes(),
@@ -88,7 +89,8 @@ CIRCSock::CIRCSock(CIRCNetwork* pNetwork)
       m_iSendsAllowed(pNetwork->GetFloodBurst()),
       m_uFloodBurst(pNetwork->GetFloodBurst()),
       m_fFloodRate(pNetwork->GetFloodRate()),
-      m_bFloodProtection(IsFloodProtected(pNetwork->GetFloodRate())) {
+      m_bFloodProtection(IsFloodProtected(pNetwork->GetFloodRate())),
+      m_lastFloodWarned(0) {
     EnableReadLine();
     m_Nick.SetIdent(m_pNetwork->GetIdent());
     m_Nick.SetHost(m_pNetwork->GetBindHost());
@@ -185,6 +187,9 @@ void CIRCSock::ReadLine(const CString& sData) {
         case CMessage::Type::Capability:
             bReturn = OnCapabilityMessage(Message);
             break;
+        case CMessage::Type::ChgHost:
+            bReturn = OnChgHostMessage(Message);
+            break;
         case CMessage::Type::CTCP:
             bReturn = OnCTCPMessage(Message);
             break;
@@ -224,6 +229,9 @@ void CIRCSock::ReadLine(const CString& sData) {
         case CMessage::Type::Quit:
             bReturn = OnQuitMessage(Message);
             break;
+        case CMessage::Type::TagMsg:
+            bReturn = OnTagMessage(Message);
+            break;
         case CMessage::Type::Text:
             bReturn = OnTextMessage(Message);
             break;
@@ -242,17 +250,42 @@ void CIRCSock::ReadLine(const CString& sData) {
 }
 
 void CIRCSock::SendNextCap() {
-    if (!m_uCapPaused) {
-        if (m_ssPendingCaps.empty()) {
-            // We already got all needed ACK/NAK replies.
-            if (!m_bAuthed) {
-                PutIRC("CAP END");
+    if (m_uCapPaused) {
+        return;
+    }
+
+    if (!m_ssPendingCaps.empty()) {
+        CString sCaps = std::move(*m_ssPendingCaps.begin());
+        m_ssPendingCaps.erase(m_ssPendingCaps.begin());
+        while (!m_ssPendingCaps.empty()) {
+            const CString& sNext = *m_ssPendingCaps.begin();
+            // Old version of cap spec allowed NAK to only contain first 100
+            // symbols of the REQ message.
+            // Alternatively, instead of parsing NAK we could remember the last
+            // REQ sent, but this is simpler, as we need the splitting logic anyway.
+            // TODO: lift this limit to something more reasonable, e.g. 400
+            if (sCaps.length() + sNext.length() > 98) {
+                break;
             }
-        } else {
-            CString sCap = *m_ssPendingCaps.begin();
+            sCaps += " " + sNext;
             m_ssPendingCaps.erase(m_ssPendingCaps.begin());
-            PutIRC("CAP REQ :" + sCap);
         }
+        PutIRC("CAP REQ :" + sCaps);
+        return;
+    }
+
+    if (!m_ssPendingCapsPhase2.empty()) {
+        // Those which NAKed in first phase, try them again, one by one,
+        // to know which of them failed.
+        CString sCap = std::move(*m_ssPendingCapsPhase2.begin());
+        m_ssPendingCapsPhase2.erase(m_ssPendingCapsPhase2.begin());
+        PutIRC("CAP REQ :" + sCap);
+        return;
+    }
+
+    // We already got all needed ACK/NAK replies.
+    if (!m_bAuthed) {
+        PutIRC("CAP END");
     }
 }
 
@@ -289,8 +322,25 @@ static void FixupChanNick(CNick& Nick, CChan* pChan) {
     }
 }
 
+// #1826: CAP away-notify clients shouldn't receive notifications if all shared
+// channels are detached
+// This applies to account, away-notify, and chghost.
+bool CIRCSock::IsNickVisibleInAttachedChannels(const CString& sNick) const {
+    const vector<CChan*>& vChans = m_pNetwork->GetChans();
+    for (const CChan* pChan : vChans) {
+        if (!pChan->IsDetached() && pChan->FindNick(sNick)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool CIRCSock::OnAccountMessage(CMessage& Message) {
     // TODO: IRCSOCKMODULECALL(OnAccountMessage(Message)) ?
+    // Do not send ACCOUNT if all shared channels are detached.
+    if (!IsNickVisibleInAttachedChannels(Message.GetNick().GetNick())) {
+        return true;
+    }
     return false;
 }
 
@@ -344,6 +394,10 @@ bool CIRCSock::OnActionMessage(CActionMessage& Message) {
 
 bool CIRCSock::OnAwayMessage(CMessage& Message) {
     // TODO: IRCSOCKMODULECALL(OnAwayMessage(Message)) ?
+    // Do not send away-notify if all shared channels are detached.
+    if (!IsNickVisibleInAttachedChannels(Message.GetNick().GetNick())) {
+        return true;
+    }
     return false;
 }
 
@@ -375,20 +429,28 @@ bool CIRCSock::OnCapabilityMessage(CMessage& Message) {
         sArgs = Message.GetParam(2);
     }
 
-    std::map<CString, std::function<void(bool bVal)>> mSupportedCaps = {
-        {"multi-prefix", [this](bool bVal) { m_bNamesx = bVal; }},
-        {"userhost-in-names", [this](bool bVal) { m_bUHNames = bVal; }},
-        {"cap-notify", [](bool bVal) {}},
-        {"server-time", [this](bool bVal) { m_bServerTime = bVal; }},
-        {"znc.in/server-time-iso",
-         [this](bool bVal) { m_bServerTime = bVal; }},
-    };
+    static std::map<CString, std::function<void(CIRCSock * pSock, bool bVal)>>
+        mSupportedCaps = {
+            {"multi-prefix",
+             [](CIRCSock* pSock, bool bVal) { pSock->m_bNamesx = bVal; }},
+            {"userhost-in-names",
+             [](CIRCSock* pSock, bool bVal) { pSock->m_bUHNames = bVal; }},
+            {"cap-notify", [](CIRCSock* pSock, bool bVal) {}},
+            {"invite-notify", [](CIRCSock* pSock, bool bVal) {}},
+            {"server-time",
+             [](CIRCSock* pSock, bool bVal) { pSock->m_bServerTime = bVal; }},
+            {"znc.in/server-time-iso",
+             [](CIRCSock* pSock, bool bVal) { pSock->m_bServerTime = bVal; }},
+            {"chghost", [](CIRCSock* pSock, bool) {}},
+            {"message-tags", [](CIRCSock* pSock,
+                                bool bVal) { pSock->m_bMessageTagCap = bVal; }},
+        };
 
     auto RemoveCap = [&](const CString& sCap) {
         IRCSOCKMODULECALL(OnServerCapResult(sCap, false), NOTHING);
         auto it = mSupportedCaps.find(sCap);
         if (it != mSupportedCaps.end()) {
-            it->second(false);
+            it->second(this, false);
         }
         m_ssAcceptedCaps.erase(sCap);
         m_ssPendingCaps.erase(sCap);
@@ -407,24 +469,38 @@ bool CIRCSock::OnCapabilityMessage(CMessage& Message) {
                 sCap = sToken.substr(0, eq);
                 sValue = sToken.substr(eq + 1);
             }
+            if (CZNC::Get().GetServerCapBlacklist().count(sCap)) {
+                continue;
+            }
             m_msCapLsValues[sCap] = sValue;
             if (OnServerCapAvailable(sCap, sValue) || mSupportedCaps.count(sCap)) {
                 m_ssPendingCaps.insert(sCap);
             }
         }
     } else if (sSubCmd == "ACK") {
-        sArgs.Trim();
-        IRCSOCKMODULECALL(OnServerCapResult(sArgs, true), NOTHING);
-        auto it = mSupportedCaps.find(sArgs);
-        if (it != mSupportedCaps.end()) {
-            it->second(true);
+        VCString vsCaps;
+        sArgs.Split(" ", vsCaps, false);
+        for (CString& sCap : vsCaps) {
+            IRCSOCKMODULECALL(OnServerCapResult(sCap, true), NOTHING);
+            auto it = mSupportedCaps.find(sCap);
+            if (it != mSupportedCaps.end()) {
+                it->second(this, true);
+            }
+            m_ssAcceptedCaps.insert(std::move(sCap));
         }
-        m_ssAcceptedCaps.insert(sArgs);
     } else if (sSubCmd == "NAK") {
         // This should work because there's no [known]
         // capability with length of name more than 100 characters.
-        sArgs.Trim();
-        RemoveCap(sArgs);
+        VCString vsCaps;
+        sArgs.Split(" ", vsCaps, false);
+        if (vsCaps.size() == 1) {
+            RemoveCap(sArgs);
+        } else {
+            // Retry them one by one
+            for (CString& sCap : vsCaps) {
+                m_ssPendingCapsPhase2.insert(std::move(sCap));
+            }
+        }
     } else if (sSubCmd == "DEL") {
         VCString vsTokens;
         sArgs.Split(" ", vsTokens, false);
@@ -495,7 +571,7 @@ bool CIRCSock::OnCTCPMessage(CCTCPMessage& Message) {
     }
 
     if (!sReply.empty()) {
-        time_t now = time(nullptr);
+        unsigned long long now = CUtils::GetMillTime();
         // If the last CTCP is older than m_uCTCPFloodTime, reset the counter
         if (m_lastCTCP + m_uCTCPFloodTime < now) m_uNumCTCP = 0;
         m_lastCTCP = now;
@@ -514,6 +590,77 @@ bool CIRCSock::OnCTCPMessage(CCTCPMessage& Message) {
     return (pChan && pChan->IsDetached());
 }
 
+bool CIRCSock::OnChgHostMessage(CChgHostMessage& Message) {
+    // Do not send chghost if all shared channels are detached.
+    if (!IsNickVisibleInAttachedChannels(Message.GetNick().GetNick())) {
+        return true;
+    }
+    // The emulation of QUIT+JOIN would be cleaner inside CClient::PutClient()
+    // but computation of new modes is difficult enough so that I don't want to
+    // repeat it for every client
+    //
+    // TODO: make CNick store modes (v, o) instead of perm chars (+, @), that
+    // would simplify this
+    bool bNeedEmulate = false;
+    for (CClient* pClient : m_pNetwork->GetClients()) {
+        if (pClient->HasChgHost()) {
+            pClient->PutClient(Message);
+        } else {
+            bNeedEmulate = true;
+            pClient->PutClient(CMessage(Message.GetNick(), "QUIT",
+                                        {"Changing hostname"},
+                                        Message.GetTags()));
+        }
+    }
+
+    CNick NewNick = Message.GetNick();
+    NewNick.SetIdent(Message.GetNewIdent());
+    NewNick.SetHost(Message.GetNewHost());
+
+    for (CChan* pChan : m_pNetwork->GetChans()) {
+        if (CNick* pNick = pChan->FindNick(Message.GetNick().GetNick())) {
+            pNick->SetIdent(Message.GetNewIdent());
+            pNick->SetHost(Message.GetNewHost());
+        }
+
+        if (!bNeedEmulate) continue;
+        if (pChan->IsDisabled()) continue;
+        if (pChan->IsDetached()) continue;
+
+        if (CNick* pNick = pChan->FindNick(NewNick.GetNick())) {
+            VCString vsModeParams = {pChan->GetName(), "+"};
+            for (char cPerm : pNick->GetPermStr()) {
+                char cMode = GetModeFromPerm(cPerm);
+                if (cMode) {
+                    vsModeParams[1].append(1, cMode);
+                    vsModeParams.push_back(NewNick.GetNick());
+                }
+            }
+
+            CTargetMessage ModeMsg;
+            ModeMsg.SetNick(CNick(":irc.znc.in"));
+            ModeMsg.SetTags(Message.GetTags());
+            ModeMsg.SetCommand("MODE");
+            ModeMsg.SetParams(std::move(vsModeParams));
+
+            for (CClient* pClient : m_pNetwork->GetClients()) {
+                if (!pClient->HasChgHost()) {
+                    // TODO: send account name and real name too, for
+                    // extended-join
+                    pClient->PutClient(CMessage(NewNick, "JOIN",
+                                                {pChan->GetName()},
+                                                Message.GetTags()));
+                    if (ModeMsg.GetParams().size() > 2) {
+                        pClient->PutClient(ModeMsg);
+                    }
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
 bool CIRCSock::OnErrorMessage(CMessage& Message) {
     // ERROR :Closing Link: nick[24.24.24.24] (Excess Flood)
     CString sError = Message.GetParam(0);
@@ -521,10 +668,16 @@ bool CIRCSock::OnErrorMessage(CMessage& Message) {
     return true;
 }
 
-bool CIRCSock::OnInviteMessage(CMessage& Message) {
+bool CIRCSock::OnInviteMessage(CInviteMessage& Message) {
+    Message.SetChan(GetNetwork()->FindChan(Message.GetChannel()));
     bool bResult = false;
-    IRCSOCKMODULECALL(OnInvite(Message.GetNick(), Message.GetParam(1)),
-                      &bResult);
+    IRCSOCKMODULECALL(OnInviteMessage(Message), &bResult);
+    if (bResult) return true;
+    CNick InvitedNick = Message.GetInvitedNick();
+    if (InvitedNick.NickEquals(GetNick())) {
+        IRCSOCKMODULECALL(OnInvite(Message.GetNick(), Message.GetParam(1)),
+                          &bResult);
+    }
     return bResult;
 }
 
@@ -1090,6 +1243,49 @@ bool CIRCSock::OnQuitMessage(CQuitMessage& Message) {
     return !bIsVisible;
 }
 
+bool CIRCSock::OnTagMessage(CTargetMessage& Message) {
+    bool bResult = false;
+    CChan* pChan = nullptr;
+    CString sTarget = Message.GetTarget();
+
+    if (sTarget.Equals(GetNick())) {
+        IRCSOCKMODULECALL(OnPrivTagMessage(Message), &bResult);
+        if (bResult) return true;
+
+        if (!m_pNetwork->IsUserOnline() ||
+            !m_pNetwork->GetUser()->AutoClearQueryBuffer()) {
+            const CNick& Nick = Message.GetNick();
+            CQuery* pQuery = m_pNetwork->AddQuery(Nick.GetNick());
+            if (pQuery) {
+                CTargetMessage Format;
+                Format.Clone(Message);
+                Format.SetNick(_NAMEDFMT(Nick.GetNickMask()));
+                Format.SetTarget("{target}");
+                pQuery->AddBuffer(Format);
+            }
+        }
+    } else {
+        pChan = m_pNetwork->FindChan(sTarget);
+        if (pChan) {
+            Message.SetChan(pChan);
+            FixupChanNick(Message.GetNick(), pChan);
+            IRCSOCKMODULECALL(OnChanTagMessage(Message), &bResult);
+            if (bResult) return true;
+
+            if (!pChan->AutoClearChanBuffer() || !m_pNetwork->IsUserOnline() ||
+                pChan->IsDetached()) {
+                CTargetMessage Format;
+                Format.Clone(Message);
+                Format.SetNick(_NAMEDFMT(Message.GetNick().GetNickMask()));
+                Format.SetTarget(_NAMEDFMT(Message.GetTarget()));
+                pChan->AddBuffer(Format);
+            }
+        }
+    }
+
+    return (pChan && pChan->IsDetached());
+}
+
 bool CIRCSock::OnTextMessage(CTextMessage& Message) {
     bool bResult = false;
     CChan* pChan = nullptr;
@@ -1201,13 +1397,15 @@ void CIRCSock::TrySend() {
         m_iSendsAllowed--;
         CMessage& Message = m_vSendQueue.front();
 
-        MCString mssTags;
-        for (const auto& it : Message.GetTags()) {
-            if (IsTagEnabled(it.first)) {
-                mssTags[it.first] = it.second;
+        if (!m_bMessageTagCap) {
+            MCString mssTags;
+            for (const auto& it : Message.GetTags()) {
+                if (IsTagEnabled(it.first)) {
+                    mssTags[it.first] = it.second;
+                }
             }
+            Message.SetTags(mssTags);
         }
-        Message.SetTags(mssTags);
         Message.SetNetwork(m_pNetwork);
 
         bool bSkip = false;
@@ -1217,6 +1415,17 @@ void CIRCSock::TrySend() {
             PutIRCRaw(Message.ToString());
         }
         m_vSendQueue.pop_front();
+
+        if (m_vSendQueue.size() * m_fFloodRate > 600) {
+            unsigned long long now = CUtils::GetMillTime();
+            // Warn no more often than once every 2 minutes
+            if (now > m_lastFloodWarned + 2 * 60'000) {
+                m_lastFloodWarned = now;
+                this->GetNetwork()->PutStatus(
+                    t_f("Warning: flood protection is delaying your messages "
+                        "by {1} seconds")(m_vSendQueue.size() * m_fFloodRate));
+            }
+        }
     }
 }
 
@@ -1253,7 +1462,7 @@ void CIRCSock::Connected() {
     PutIRC("CAP LS 302");
 
     if (!sPass.empty()) {
-        PutIRC("PASS " + sPass);
+        PutIRC(CMessage(CNick(), "PASS", {sPass}));
     }
 
     PutIRC("NICK " + sNick);
@@ -1510,6 +1719,18 @@ char CIRCSock::GetPermFromMode(char cMode) const {
         for (unsigned int a = 0; a < m_sPermModes.size(); a++) {
             if (m_sPermModes[a] == cMode) {
                 return m_sPerms[a];
+            }
+        }
+    }
+
+    return 0;
+}
+
+char CIRCSock::GetModeFromPerm(char cPerm) const {
+    if (m_sPermModes.size() == m_sPerms.size()) {
+        for (unsigned int a = 0; a < m_sPermModes.size(); a++) {
+            if (m_sPerms[a] == cPerm) {
+                return m_sPermModes[a];
             }
         }
     }

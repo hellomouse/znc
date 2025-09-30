@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -751,11 +751,19 @@ class CModule {
     virtual void OnPart(const CNick& Nick, CChan& Channel,
                         const CString& sMessage);
 
-    /** Called when user is invited into a channel
+    /** Called when a user is invited to a channel.
+     *  That includes the case of `invite-notify`.
+     *  @since 1.10.0
+     *  @param Message The message.
+     */
+    virtual EModRet OnInviteMessage(CInviteMessage& Message);
+    /** Called when user is invited into a channel.
+     *  @note even in case of `invite-notify` this is only called for "you"
+     *  being invited, as this function has no way to tell you whom is
+     *  invited instead.
      *  @param Nick The nick who invited you.
      *  @param sChan The channel the user got invited into
      *  @return See CModule::EModRet.
-     *  @todo Add OnInviteMessage() hook
      */
     virtual EModRet OnInvite(const CNick& Nick, const CString& sChan);
 
@@ -1079,6 +1087,25 @@ class CModule {
     /// @deprecated Use OnSendToIRCMessage() instead.
     virtual EModRet OnSendToIRC(CString& sLine);
 
+    /** This module hook is called when a user sends a TAGMSG message.
+     *  @since 1.10.0
+     *  @param Message The message which was sent.
+     *  @return See CModule::EModRet.
+     */
+    virtual EModRet OnUserTagMessage(CTargetMessage& Message);
+    /** Called when we receive a channel TAGMSG message <em>from IRC</em>.
+     *  @since 1.10.0
+     *  @param Message The channel message.
+     *  @return See CModule::EModRet.
+     */
+    virtual EModRet OnChanTagMessage(CTargetMessage& Message);
+    /** Called when we receive a private TAGMSG message <em>from IRC</em>.
+     *  @since 1.10.0
+     *  @param Message The message.
+     *  @return See CModule::EModRet.
+     */
+    virtual EModRet OnPrivTagMessage(CTargetMessage& Message);
+
     ModHandle GetDLL() { return m_pDLL; }
 
     /** This function sends a given IRC line to the IRC server, if we
@@ -1364,6 +1391,47 @@ class CModule {
     virtual void OnClientCapRequest(CClient* pClient, const CString& sCap,
                                     bool bState);
 
+    /** Called when a client requests SASL authentication. Use ssMechanisms.insert("MECHANISM")
+     *  for announcing SASL mechanisms which your module supports.
+     *  @param ssMechanisms The set of supported SASL mechanisms to append to.
+     *  @since 1.10.0
+     */
+    virtual void OnClientGetSASLMechanisms(SCString& ssMechanisms);
+    /** Called when a client has selected a SASL mechanism for SASL authentication.
+     *  If implementing a SASL authentication mechanism, set sResponse to
+     * specify an initial challenge message to send to the client. Otherwise, an
+     * empty response will be sent. To avoid sending any immediate response,
+     * return HALT; in that case the module should schedule calling
+     * GetClient()->SendSASLChallenge() with the initial response: in IRC SASL,
+     * server always responds first.
+     * @param sMechanism The SASL mechanism selected by the client.
+     * @param sResponse The optional value of an initial SASL challenge message
+     * to send to the client.
+     * @since 1.10.0
+     */
+    virtual EModRet OnClientSASLServerInitialChallenge(
+        const CString& sMechanism, CString& sResponse);
+    /** Called when a client is sending us a SASL message after the mechanism was selected.
+     *  If implementing a SASL authentication mechanism, check the passed
+     * credentials, then either request more data by sending a challenge in
+     * GetClient()->SendSASLChallenge(), or reject authentication by calling
+     * GetClient()->RefuseSASLLogin(), or accept it by calling
+     * GetClient()->AcceptSASLLogin().
+     * At some point before accepting the login, you should call
+     * GetClient()->ParseUser(authz-id) to let it know the network name to
+     * attach to and the client id.
+     * @param sMechanism The SASL mechanism selected by the client.
+     * @param sMessage The SASL opaque value/credentials sent by the client,
+     * after debase64ing and concatenating if it was split.
+     * @since 1.10.0
+     */
+    virtual EModRet OnClientSASLAuthenticate(const CString& sMechanism,
+                                             const CString& sMessage);
+    /** Called when a client sent '*' to abort SASL, or aborted it for another reason.
+     *  @since 1.10.0
+     */
+    virtual void OnClientSASLAborted();
+
     /** Called when a module is going to be loaded.
      *  @param sModName name of the module.
      *  @param eType wanted type of the module (user/global).
@@ -1550,6 +1618,7 @@ class CModules : public std::vector<CModule*>, private CCoreTranslationMixin {
     bool OnPart(const CNick& Nick, CChan& Channel, const CString& sMessage);
     bool OnPartMessage(CPartMessage& Message);
     bool OnInvite(const CNick& Nick, const CString& sChan);
+    bool OnInviteMessage(CInviteMessage& Message);
 
     bool OnChanBufferStarting(CChan& Chan, CClient& Client);
     bool OnChanBufferEnding(CChan& Chan, CClient& Client);
@@ -1587,6 +1656,9 @@ class CModules : public std::vector<CModule*>, private CCoreTranslationMixin {
     bool OnUserTopicRequest(CString& sChannel);
     bool OnUserQuit(CString& sMessage);
     bool OnUserQuitMessage(CQuitMessage& Message);
+    bool OnUserTagMessage(CTargetMessage& Message);
+    bool OnChanTagMessage(CTargetMessage& Message);
+    bool OnPrivTagMessage(CTargetMessage& Message);
 
     bool OnCTCPReply(CNick& Nick, CString& sMessage);
     bool OnCTCPReplyMessage(CCTCPMessage& Message);
@@ -1665,6 +1737,14 @@ class CModules : public std::vector<CModule*>, private CCoreTranslationMixin {
     bool IsClientCapSupported(CClient* pClient, const CString& sCap,
                               bool bState);
     bool OnClientCapRequest(CClient* pClient, const CString& sCap, bool bState);
+
+    bool OnClientGetSASLMechanisms(SCString& ssMechanisms);
+    bool OnClientSASLAborted();
+    bool OnClientSASLServerInitialChallenge(const CString& sMechanism,
+                                            CString& sResponse);
+    bool OnClientSASLAuthenticate(const CString& sMechanism,
+                                  const CString& sBuffer);
+
     bool OnModuleLoading(const CString& sModName, const CString& sArgs,
                          CModInfo::EModuleType eType, bool& bSuccess,
                          CString& sRetMsg);

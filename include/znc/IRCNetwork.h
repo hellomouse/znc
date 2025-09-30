@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -115,6 +115,8 @@ class CIRCNetwork : private CCoreTranslationMixin {
     CServer* FindServer(const CString& sName) const;
     bool DelServer(const CString& sName, unsigned short uPort,
                    const CString& sPass);
+    bool DelServer(const CServer& Server);
+    bool AddServer(CServer Server);
     bool AddServer(const CString& sName);
     bool AddServer(const CString& sName, unsigned short uPort,
                    const CString& sPass = "", bool bSSL = false);

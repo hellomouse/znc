@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2024 ZNC, see the NOTICE file for details.
+ * Copyright (C) 2004-2025 ZNC, see the NOTICE file for details.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -156,6 +156,121 @@ TEST_F(ZNCTest, ModperlSocket) {
     client.ReadUntil("received 4 bytes");
 }
 
+TEST_F(ZNCTest, ModpythonUnixSocket) {
+#ifndef WANT_PYTHON
+    GTEST_SKIP() << "Modpython is disabled";
+#endif
+#ifdef __CYGWIN__
+    GTEST_SKIP() << "Bug to fix: https://github.com/znc/znc/issues/1947";
+#endif
+    auto znc = Run();
+    znc->CanLeak();
+
+    InstallModule("socktest.py", R"(
+        import znc
+
+        class acc(znc.Socket):
+            def OnReadData(self, data):
+                self.GetModule().PutModule('received {} bytes'.format(len(data)))
+                self.Close()
+
+        class lis(znc.Socket):
+            def OnAccepted(self, host, port):
+                sock = self.GetModule().CreateSocket(acc)
+                sock.DisableReadLine()
+                return sock
+
+        class socktest(znc.Module):
+            def OnLoad(self, args, ret):
+                listen = self.CreateSocket(lis)
+                return listen.Listen(addrtype='unix', path=self.TestSockPath())
+
+            def OnModCommand(self, cmd):
+                sock = self.CreateSocket()
+                sock.ConnectUnix(self.TestSockPath())
+                sock.WriteBytes(b'blah')
+
+            def TestSockPath(self):
+                path = self.GetSavePath() + "/sock"
+                # https://unix.stackexchange.com/questions/367008/why-is-socket-path-length-limited-to-a-hundred-chars
+                if len(path) < 100:
+                    return path
+                return "./testsock.modpython"
+    )");
+
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod modpython");
+    client.Write("znc loadmod socktest");
+    client.ReadUntil("Loaded module socktest");
+    client.Write("PRIVMSG *socktest :foo");
+    client.ReadUntil("received 4 bytes");
+}
+
+TEST_F(ZNCTest, ModperlUnixSocket) {
+#ifndef WANT_PERL
+    GTEST_SKIP() << "Modperl is disabled";
+#endif
+#ifdef __CYGWIN__
+    GTEST_SKIP() << "Bug to fix: https://github.com/znc/znc/issues/1947";
+#endif
+    auto znc = Run();
+    znc->CanLeak();
+
+    InstallModule("socktest.pm", R"(
+        package socktest::acc;
+        use base 'ZNC::Socket';
+        sub OnReadData {
+            my ($self, $data, $len) = @_;
+            $self->GetModule->PutModule("received $len bytes");
+            $self->Close;
+        }
+
+        package socktest::lis;
+        use base 'ZNC::Socket';
+        sub OnAccepted {
+            my $self = shift;
+            return $self->GetModule->CreateSocket('socktest::acc');
+        }
+
+        package socktest::conn;
+        use base 'ZNC::Socket';
+
+        package socktest;
+        use base 'ZNC::Module';
+        sub OnLoad {
+            my $self = shift;
+            my $listen = $self->CreateSocket('socktest::lis');
+            $listen->Listen(addrtype=>'unix', path=>$self->TestSockPath);
+        }
+        sub OnModCommand {
+            my ($self, $cmd) = @_;
+            my $sock = $self->CreateSocket('socktest::conn');
+            $sock->ConnectUnix($self->TestSockPath);
+            $sock->Write('blah');
+        }
+        sub TestSockPath {
+            my $self = shift;
+            my $path = $self->GetSavePath . "/sock";
+            # https://unix.stackexchange.com/questions/367008/why-is-socket-path-length-limited-to-a-hundred-chars
+            if (length($path) < 100) {
+                return $path;
+            }
+            return "./testsock.modperl";
+        }
+
+        1;
+    )");
+
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod modperl");
+    client.Write("znc loadmod socktest");
+    client.ReadUntil("Loaded module socktest");
+    client.Write("PRIVMSG *socktest :foo");
+    client.ReadUntil("received 4 bytes");
+}
+
 TEST_F(ZNCTest, ModpythonVCString) {
 #ifndef WANT_PYTHON
     GTEST_SKIP() << "Modpython is disabled";
@@ -176,6 +291,7 @@ TEST_F(ZNCTest, ModpythonVCString) {
     auto client = LoginClient();
     client.Write("znc loadmod modpython");
     client.Write("znc loadmod test");
+    sleep(1);
     client.Write("PRIVMSG *test :foo");
     client.ReadUntil("'*test', 'foo'");
 }
@@ -328,6 +444,10 @@ TEST_F(ZNCTest, ModpythonCommand) {
     client.Write("PRIVMSG *cmdtest :ping or");
     client.ReadUntil(":*cmdtest!cmdtest@znc.in PRIVMSG nick :ping or pong");
 
+#ifndef HAVE_I18N
+    GTEST_SKIP() << "I18N is disabled, skipping the rest of this test";
+#endif
+
     InstallTranslation("cmdtest", "ru_RU", R"(
         msgid ""
         msgstr ""
@@ -353,6 +473,112 @@ TEST_F(ZNCTest, ModpythonCommand) {
     client.ReadUntil(":*cmdtest!cmdtest@znc.in PRIVMSG nick :\x02ping аргумент\x0F: бла");
     client.Write("PRIVMSG *cmdtest :ping");
     client.ReadUntil(":*cmdtest!cmdtest@znc.in PRIVMSG nick :ping понг");
+}
+
+TEST_F(ZNCTest, ModpythonSaslAuth) {
+#ifndef WANT_PYTHON
+    GTEST_SKIP() << "Modpython is disabled";
+#endif
+    auto znc = Run();
+    znc->CanLeak();
+
+    InstallModule("sasltest.py", R"(
+        import znc
+
+        class sasltest(znc.Module):
+
+            module_types = [znc.CModInfo.GlobalModule]
+
+            def OnClientGetSASLMechanisms(self, ssMechanisms):
+                ssMechanisms.insert("FOO")
+
+            def OnClientSASLServerInitialChallenge(self, sMechanism, sResponse):
+                if sMechanism == "FOO":
+                    sResponse.s = "Welcome"
+                return znc.CONTINUE
+
+            def OnClientSASLAuthenticate(self, sMechanism, sMessage):
+                if sMechanism == "FOO":
+                    user = znc.CZNC.Get().FindUser("user")
+                    self.GetClient().AcceptSASLLogin(user)
+                    return znc.HALT
+                return znc.CONTINUE
+
+    )");
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod modpython");
+    client.Write("znc loadmod sasltest");
+    client.ReadUntil("Loaded");
+
+    auto client2 = ConnectClient();
+    client2.Write("CAP LS 302");
+    client2.Write("NICK nick");
+    client2.ReadUntil(" sasl=FOO,PLAIN ");
+    client2.Write("CAP REQ :sasl");
+    client2.Write("AUTHENTICATE FOO");
+    client2.ReadUntil("AUTHENTICATE " + QByteArrayLiteral("Welcome").toBase64());
+    client2.Write("AUTHENTICATE +");
+    client2.ReadUntilRe(
+        ":irc.znc.in 900 nick nick!user@(localhost)? user :You are now logged "
+        "in as user");
+}
+
+TEST_F(ZNCTest, ModperlSaslAuth) {
+#ifndef WANT_PERL
+    GTEST_SKIP() << "Modperl is disabled";
+#endif
+    auto znc = Run();
+    znc->CanLeak();
+
+    InstallModule("sasltest.pm", R"(
+		package sasltest;
+		use base 'ZNC::Module';
+		sub module_types { $ZNC::CModInfo::GlobalModule }
+
+		sub OnClientGetSASLMechanisms {
+			my $self = shift;
+			my $mechs = shift;
+			$mechs->insert('FOO');
+		}
+
+		sub OnClientSASLServerInitialChallenge {
+			if ($_[1] eq "FOO") {
+				$_[2] = "Welcome";
+			}
+			return $ZNC::CONTINUE;
+		}
+
+		sub OnClientSASLAuthenticate {
+			my $self = $_[0];
+			if ($_[1] eq "FOO") {
+				my $user = ZNC::CZNC::Get()->FindUser("user");
+				$self->GetClient->AcceptSASLLogin($user);
+				return $ZNC::HALT;
+			}
+			return $ZNC::CONTINUE;
+		}
+
+		1;
+)");
+
+    auto ircd = ConnectIRCd();
+    auto client = LoginClient();
+    client.Write("znc loadmod modperl");
+    client.Write("znc loadmod sasltest");
+    client.ReadUntil("Loaded");
+
+    auto client2 = ConnectClient();
+    client2.Write("CAP LS 302");
+    client2.Write("NICK nick");
+    client2.ReadUntil(" sasl=FOO,PLAIN ");
+    client2.Write("CAP REQ :sasl");
+    client2.Write("AUTHENTICATE FOO");
+    client2.ReadUntil("AUTHENTICATE " + QByteArrayLiteral("Welcome").toBase64());
+    client2.Write("AUTHENTICATE +");
+    client2.ReadUntilRe(
+        ":irc.znc.in 900 nick nick!user@(localhost)? user :You are now logged "
+        "in as user");
 }
 
 }  // namespace
